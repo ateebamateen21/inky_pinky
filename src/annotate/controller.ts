@@ -32,6 +32,7 @@ import {
 	StrokeAnnotation,
 	ToolType,
 } from './types';
+import type { PageTemplate } from '../templates';
 
 // The eraser reuses the shared width control as its size/radius (per the
 // plan: "adjustable size/radius, same as pen/highlighter width control"),
@@ -113,6 +114,12 @@ interface PageMount {
 	detach: () => void;
 }
 
+export interface PageTemplateChoices {
+	templates: readonly PageTemplate[];
+	// Which of them the + button adds, so the menu can say so.
+	defaultId: string;
+}
+
 export interface AnnotationControllerOptions {
 	// The plugin-wide tool/color/width selection. Passed in rather than
 	// owned here because a Markdown ink block's controller is destroyed and
@@ -127,7 +134,12 @@ export interface AnnotationControllerOptions {
 	// surface people draw on most. Omitted by callers whose controller
 	// outlives the work, which get their own.
 	history?: HistoryStack;
-	onAddPage?: () => void;
+	// The template to add, by id; omitted means the default one.
+	onAddPage?: (templateId?: string) => void;
+	// What the toolbar's Add page menu lists. Read each time the menu opens,
+	// not once, so a template added in settings is there without reopening
+	// the PDF.
+	getPageTemplates?: () => PageTemplateChoices;
 	getCurrentPage?: () => number | null;
 	// Fires once per committed gesture (draw, erase, move, resize, recolor,
 	// clear, lasso-delete) and once per undo/redo — the signal src/pdfView.ts
@@ -576,8 +588,12 @@ export class AnnotationController {
 
 	// ---- Page-level actions ----
 
-	addPage(): void {
-		this.options.onAddPage?.();
+	addPage(templateId?: string): void {
+		this.options.onAddPage?.(templateId);
+	}
+
+	getPageTemplates(): PageTemplateChoices {
+		return this.options.getPageTemplates?.() ?? { templates: [], defaultId: '' };
 	}
 
 	canInvert(): boolean {

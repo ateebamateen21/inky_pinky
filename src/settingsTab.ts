@@ -1,7 +1,17 @@
-import { PluginSettingTab, type App, type Plugin, type SettingDefinitionItem } from 'obsidian';
+import { PluginSettingTab, type App, type Plugin, type SettingDefinitionItem, type SettingDefinitionPage } from 'obsidian';
 import { ALL_PRESET_COLORS } from './annotate';
-import { TEMPLATE_STYLES, TEMPLATE_STYLE_LABELS } from './templates';
-import { colorLabelKey, defaultSettings, readSetting, writeSetting, type InklingSettings } from './settings';
+import { MIN_SPACING_MM, TEMPLATE_STYLES, TEMPLATE_STYLE_LABELS, type PageTemplate } from './templates';
+import {
+	addPageTemplate,
+	colorLabelKey,
+	defaultSettings,
+	deletePageTemplate,
+	movePageTemplate,
+	pageTemplateKey,
+	readSetting,
+	writeSetting,
+	type InklingSettings,
+} from './settings';
 
 // The Obsidian-facing half of the settings. The pure half — the shape,
 // the defaults, the defensive read of whatever loadData() returns, and
@@ -114,6 +124,34 @@ export class InklingSettingTab extends PluginSettingTab {
 			},
 			{
 				type: 'group',
+				heading: 'Page templates',
+				items: [
+					{
+						name: 'Default page template',
+						desc:
+							'What the + button in a PDF\'s toolbar adds. The arrow beside it lists every template; picking one there adds that page ' +
+							'once and leaves this alone. A new page always matches the size of the page it follows.',
+						aliases: ['add page', 'grid', 'ruled', 'dots'],
+						control: {
+							type: 'dropdown',
+							key: 'defaultPageTemplate',
+							defaultValue: defaults.defaultPageTemplate,
+							options: Object.fromEntries(this.plugin.settings.pageTemplates.map((t) => [t.id, t.name])),
+						},
+					},
+				],
+			},
+			{
+				type: 'list',
+				heading: 'Page templates',
+				emptyState: 'No templates.',
+				items: this.plugin.settings.pageTemplates.map((template) => this.templatePage(template)),
+				addItem: { name: 'Add template', action: () => void this.changeTemplates(addPageTemplate) },
+				onDelete: (index) => void this.changeTemplates((settings) => deletePageTemplate(settings, index)),
+				onReorder: (from, to) => void this.changeTemplates((settings) => movePageTemplate(settings, from, to)),
+			},
+			{
+				type: 'group',
 				heading: 'Ink blocks',
 				items: [
 					{
@@ -175,6 +213,60 @@ export class InklingSettingTab extends PluginSettingTab {
 		];
 	}
 
+	// One template as a page of its own: its name, its style, and the gap
+	// between rules, dots or grid lines. Controls are keyed by the
+	// template's id, so reordering the list never points one at another.
+	private templatePage(template: PageTemplate): SettingDefinitionPage {
+		const current = (): PageTemplate | undefined => this.plugin.settings.pageTemplates.find((t) => t.id === template.id);
+		return {
+			type: 'page',
+			name: template.name,
+			displayValue: () => {
+				const now = current();
+				if (!now) return '';
+				return now.style === 'blank' ? TEMPLATE_STYLE_LABELS.blank : `${TEMPLATE_STYLE_LABELS[now.style]}, ${now.spacing} mm`;
+			},
+			items: [
+				{
+					name: 'Name',
+					control: { type: 'text', key: pageTemplateKey(template.id, 'name'), defaultValue: template.name, placeholder: 'Template name' },
+				},
+				{
+					name: 'Style',
+					control: {
+						type: 'dropdown',
+						key: pageTemplateKey(template.id, 'style'),
+						defaultValue: template.style,
+						options: Object.fromEntries(TEMPLATE_STYLES.map((style) => [style, TEMPLATE_STYLE_LABELS[style]])),
+					},
+				},
+				{
+					name: 'Spacing',
+					desc:
+						'Millimetres between rules, dots or grid lines. About 5 is graph paper and 8 to 9 is college-ruled. ' +
+						'Closer dots make a larger file that is slower to draw.',
+					visible: () => current()?.style !== 'blank',
+					control: {
+						type: 'number',
+						key: pageTemplateKey(template.id, 'spacing'),
+						defaultValue: template.spacing,
+						min: MIN_SPACING_MM,
+						step: 0.5,
+					},
+				},
+			],
+		};
+	}
+
+	// Adding, deleting or reordering changes which settings exist, not just
+	// a value, so the tab has to describe itself again (update), where a
+	// value change only needs the DOM re-checked (refreshDomState).
+	private async changeTemplates(change: (settings: InklingSettings) => InklingSettings): Promise<void> {
+		Object.assign(this.plugin.settings, change(this.plugin.settings));
+		await this.plugin.saveSettings();
+		this.update();
+	}
+
 	getControlValue(key: string): unknown {
 		return readSetting(this.plugin.settings, key);
 	}
@@ -186,5 +278,7 @@ export class InklingSettingTab extends PluginSettingTab {
 		await this.plugin.saveSettings();
 		// The folder setting shows only for one location.
 		if (key === 'inkFileLocation') this.refreshDomState();
+		// Spacing means nothing on a blank page, so its row follows the style.
+		if (key.endsWith('.style')) this.refreshDomState();
 	}
 }

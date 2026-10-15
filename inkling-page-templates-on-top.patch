@@ -1,0 +1,1629 @@
+diff --git a/src/annotate/controller.ts b/src/annotate/controller.ts
+index e08b6db..1bb3785 100644
+--- a/src/annotate/controller.ts
++++ b/src/annotate/controller.ts
+@@ -32,6 +32,7 @@ import {
+ 	StrokeAnnotation,
+ 	ToolType,
+ } from './types';
++import type { PageTemplate } from '../templates';
+ 
+ // The eraser reuses the shared width control as its size/radius (per the
+ // plan: "adjustable size/radius, same as pen/highlighter width control"),
+@@ -113,6 +114,12 @@ interface PageMount {
+ 	detach: () => void;
+ }
+ 
++export interface PageTemplateChoices {
++	templates: readonly PageTemplate[];
++	// Which of them the + button adds, so the menu can say so.
++	defaultId: string;
++}
++
+ export interface AnnotationControllerOptions {
+ 	// The plugin-wide tool/color/width selection. Passed in rather than
+ 	// owned here because a Markdown ink block's controller is destroyed and
+@@ -127,7 +134,12 @@ export interface AnnotationControllerOptions {
+ 	// surface people draw on most. Omitted by callers whose controller
+ 	// outlives the work, which get their own.
+ 	history?: HistoryStack;
+-	onAddPage?: () => void;
++	// The template to add, by id; omitted means the default one.
++	onAddPage?: (templateId?: string) => void;
++	// What the toolbar's Add page menu lists. Read each time the menu opens,
++	// not once, so a template added in settings is there without reopening
++	// the PDF.
++	getPageTemplates?: () => PageTemplateChoices;
+ 	getCurrentPage?: () => number | null;
+ 	// Fires once per committed gesture (draw, erase, move, resize, recolor,
+ 	// clear, lasso-delete) and once per undo/redo — the signal src/pdfView.ts
+@@ -576,8 +588,12 @@ export class AnnotationController {
+ 
+ 	// ---- Page-level actions ----
+ 
+-	addPage(): void {
+-		this.options.onAddPage?.();
++	addPage(templateId?: string): void {
++		this.options.onAddPage?.(templateId);
++	}
++
++	getPageTemplates(): PageTemplateChoices {
++		return this.options.getPageTemplates?.() ?? { templates: [], defaultId: '' };
+ 	}
+ 
+ 	canInvert(): boolean {
+diff --git a/src/annotate/toolbar.ts b/src/annotate/toolbar.ts
+index 40ea147..6d84297 100644
+--- a/src/annotate/toolbar.ts
++++ b/src/annotate/toolbar.ts
+@@ -1,4 +1,5 @@
+-import { setTooltip } from 'obsidian';
++import { Menu, setTooltip } from 'obsidian';
++import type { TemplateStyle } from '../templates';
+ import { setIconOrText } from '../icon';
+ import { AnnotationController } from './controller';
+ import { MAX_ZOOM } from './pointer';
+@@ -70,6 +71,16 @@ function iconButton(className: string, spec: ButtonSpec, onClick: () => void): H
+ 	return button;
+ }
+ 
++// Lucide icon names, one per background, for the Add page menu. Cosmetic:
++// the title carries the meaning, so an icon an older Obsidian lacks leaves
++// a plain entry rather than a broken one.
++const TEMPLATE_ICONS: Record<TemplateStyle, string> = {
++	blank: 'file',
++	lined: 'align-justify',
++	'dot-grid': 'grip',
++	grid: 'grid-3x3',
++};
++
+ function separator(): HTMLElement {
+ 	const sep = el('div', 'inkling-toolbar-sep');
+ 	// Decoration, not structure — a screen reader announcing "separator"
+@@ -181,14 +192,37 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
+ 		{ icon: 'file-x', fallback: '⌧', title: 'Clear page' },
+ 		() => controller.clearCurrentPage(),
+ 	);
+-	// Only meaningful for plugin-created handwritten notes — hidden for
+-	// imported PDFs (books, papers, ...) via the refresh() below, since
+-	// there's no notion of "add a blank/lined/dot-grid page" to a book.
++	// Two controls that work as one: the plus adds a page with the default
++	// template (chosen in settings), and the arrow beside it lists every
++	// template to add one from. Picking from the list adds that page once;
++	// it never changes what the plus does. Both are hidden where pages
++	// cannot be added (an ink block in a note) and both are disabled on a
++	// document that cannot be written to.
+ 	const addPageButton = iconButton(
+ 		'inkling-tool-button',
+-		{ icon: 'file-plus', fallback: '＋', title: 'Add page' },
++		{ icon: 'file-plus', fallback: '＋', title: 'Add page (default template)' },
+ 		() => controller.addPage(),
+ 	);
++	const addPageMenuButton = iconButton(
++		'inkling-tool-button inkling-add-page-menu',
++		{ icon: 'chevron-down', fallback: '▾', title: 'Add page from a template' },
++		() => {
++			const { templates, defaultId } = controller.getPageTemplates();
++			const menu = new Menu();
++			for (const template of templates) {
++				menu.addItem((item) =>
++					item
++						.setTitle(template.id === defaultId ? `${template.name} (default)` : template.name)
++						.setIcon(TEMPLATE_ICONS[template.style])
++						.onClick(() => controller.addPage(template.id)),
++				);
++			}
++			// Positioned from the button rather than from the click, so the
++			// same call works for a pen tap, a finger and the keyboard.
++			const rect = addPageMenuButton.getBoundingClientRect();
++			menu.showAtPosition({ x: rect.left, y: rect.bottom });
++		},
++	);
+ 	// Darkens the page under the ink. A reading action like zoom, so it
+ 	// stays available on a document that cannot be written to.
+ 	const invertButton = iconButton(
+@@ -204,7 +238,7 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
+ 		{ icon: 'panel-left', fallback: '☰', title: 'Outline and find' },
+ 		() => controller.toggleNavigation(),
+ 	);
+-	actionGroup.append(undoButton, redoButton, separator(), deleteButton, clearPageButton, addPageButton, invertButton, navButton);
++	actionGroup.append(undoButton, redoButton, separator(), deleteButton, clearPageButton, addPageButton, addPageMenuButton, invertButton, navButton);
+ 
+ 	// Readouts, not controls — pushed to the far end of the strip (see
+ 	// .inkling-toolbar-status) so the things you press stay together on the
+@@ -281,7 +315,7 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
+ 		const noteButton = toolButtons.get('note');
+ 		if (noteButton && !controller.canTakeNotes()) noteButton.hidden = true;
+ 		for (const group of [colorGroup, widthGroup, statusGroup]) group.hidden = collapsed;
+-		for (const button of [redoButton, deleteButton, clearPageButton, addPageButton, invertButton, navButton]) button.hidden = collapsed;
++		for (const button of [redoButton, deleteButton, clearPageButton, addPageButton, addPageMenuButton, invertButton, navButton]) button.hidden = collapsed;
+ 		setIconOrText(collapseButton, collapsed ? 'chevrons-down' : 'chevrons-up', collapsed ? '⌄' : '⌃');
+ 		setTooltip(collapseButton, collapsed ? 'Show tools' : 'Collapse tools');
+ 		for (const [tool, button] of toolButtons) {
+@@ -363,11 +397,13 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
+ 		// the second has to win whenever the strip is open.
+ 		if (!collapsed) {
+ 			addPageButton.hidden = !controller.getCanManagePages();
++			addPageMenuButton.hidden = addPageButton.hidden;
+ 			navButton.hidden = !controller.canToggleNavigation();
+ 			invertButton.hidden = !controller.canInvert();
+ 		}
+ 		invertButton.toggleClass('is-active', controller.isInverted());
+ 		addPageButton.disabled = readOnly;
++		addPageMenuButton.disabled = readOnly;
+ 	};
+ 	refresh();
+ 
+diff --git a/src/pdfView.ts b/src/pdfView.ts
+index a58db16..2a62710 100644
+--- a/src/pdfView.ts
++++ b/src/pdfView.ts
+@@ -13,7 +13,7 @@ import { RENDER_SCALE, baseRenderScale, layoutRenderScale, zoomedRenderScale } f
+ import { maxWriteIntervalMs } from './pdf/saveCadence';
+ import { placeWithin } from './pdf/popoverPlacement';
+ import { defaultSettings, type InklingSettings } from './settings';
+-import { applyTemplateStyle, insertPageLike, pageSizeFor, readTemplateStyle } from './templates';
++import { applyTemplate, insertPageLike, pageSizeFor } from './templates';
+ 
+ // pdfjs-dist is pinned to an exact version (see package.json) — 5.4.624+
+ // calls Uint8Array.prototype.toHex() unconditionally when computing a PDF's
+@@ -397,7 +397,11 @@ export class PdfAnnotateView extends FileView {
+ 			// Shared with every other annotating surface, so the pen you set
+ 			// up in a note is the pen you get in a PDF (see annotate/toolState).
+ 			toolState,
+-			onAddPage: () => void this.addPage(),
++			onAddPage: (templateId) => void this.addPage(templateId),
++			getPageTemplates: () => ({
++				templates: this.getSettings().pageTemplates,
++				defaultId: this.getSettings().defaultPageTemplate,
++			}),
+ 			getCurrentPage: () => this.currentPageNumber,
+ 			onAnnotationsChanged: (pageNumber) => this.markPageDirty(pageNumber),
+ 			onZoomSettled: (pageNumber, scale) => void this.upgradeResolution(pageNumber, scale),
+@@ -1396,7 +1400,7 @@ export class PdfAnnotateView extends FileView {
+ 		}
+ 	}
+ 
+-	private async addPage(): Promise<void> {
++	private async addPage(templateId?: string): Promise<void> {
+ 		const file = this.currentFile;
+ 		if (!file || this.addingPage) return;
+ 		this.addingPage = true;
+@@ -1414,11 +1418,20 @@ export class PdfAnnotateView extends FileView {
+ 			// currentPageNumber is 1-based; as a 0-based insertion index that
+ 			// is exactly "right after the page the user is currently on".
+ 			const insertIndex = Math.min(this.currentPageNumber, pdfDoc.getPageCount());
+-			const style = readTemplateStyle(pdfDoc);
++			// The one picked from the menu; else the default from settings,
++			// which is also what a pick that no longer exists gets (a
++			// template can be deleted while the menu is open). The list is
++			// never empty — settings see to that — so the last fallback is
++			// only to keep the types honest.
++			const { pageTemplates, defaultPageTemplate } = this.getSettings();
++			const template =
++				pageTemplates.find((t) => t.id === templateId) ??
++				pageTemplates.find((t) => t.id === defaultPageTemplate) ??
++				pageTemplates[0];
+ 			// Shaped like the page it follows (size and rotation), falling back to
+ 			// the paper-size setting only when there is no page to copy from.
+ 			const newPage = insertPageLike(pdfDoc, insertIndex, pageSizeFor(this.getSettings().pageSize));
+-			applyTemplateStyle(newPage, style);
++			if (template) applyTemplate(newPage, template);
+ 
+ 			const updatedBytes = await pdfDoc.save();
+ 			await writeBinarySafely(this.app.vault, file, toArrayBuffer(updatedBytes));
+diff --git a/src/settings.ts b/src/settings.ts
+index 6850d76..fa2d71d 100644
+--- a/src/settings.ts
++++ b/src/settings.ts
+@@ -5,7 +5,16 @@
+ import { ALL_PRESET_COLORS } from './annotate/types';
+ import { isVaultPath } from './markdown/inkFence';
+ import { INK_FILE_LOCATIONS, trimFolder, type InkFileLocation } from './markdown/inkFilePath';
+-import { TEMPLATE_STYLES, type PageSizeName, type TemplateStyle } from './templates';
++import {
++	MIN_SPACING_MM,
++	TEMPLATE_STYLES,
++	TEMPLATE_STYLE_LABELS,
++	builtInPageTemplates,
++	defaultSpacingMm,
++	type PageSizeName,
++	type PageTemplate,
++	type TemplateStyle,
++} from './templates';
+ 
+ export type { PageSizeName };
+ 
+@@ -22,6 +31,16 @@ export type DarkInversion = 'off' | 'on' | 'follow-theme';
+ export interface InklingSettings {
+ 	defaultTemplate: TemplateStyle;
+ 	pageSize: PageSizeName;
++	// The backgrounds the toolbar's Add page button can put on a new page,
++	// in the order they are listed. Never empty. Kept apart from
++	// defaultTemplate, which is the ruling a brand-new *note* starts with:
++	// that one is a style, this is a named style-and-spacing, and the two
++	// answer different questions.
++	pageTemplates: PageTemplate[];
++	// The id of the one the Add page button itself uses. Chosen here and
++	// only here — picking another from the button's menu adds that page and
++	// leaves this alone.
++	defaultPageTemplate: string;
+ 	saveCadence: SaveCadence;
+ 	pressure: boolean;
+ 	smoothing: boolean;
+@@ -56,6 +75,8 @@ export function defaultSettings(): InklingSettings {
+ 	return {
+ 		defaultTemplate: 'blank',
+ 		pageSize: 'letter',
++		pageTemplates: builtInPageTemplates(),
++		defaultPageTemplate: 'blank',
+ 		saveCadence: 'auto',
+ 		pressure: true,
+ 		smoothing: true,
+@@ -84,6 +105,43 @@ function bool(value: unknown, fallback: boolean): boolean {
+ 	return typeof value === 'boolean' ? value : fallback;
+ }
+ 
++// An id is a key in the settings tab (`pageTemplates.<id>.spacing`), so it
++// cannot hold a dot, and a hand-edited file might hold anything.
++const TEMPLATE_ID = /^[A-Za-z0-9_-]+$/;
++
++function usableSpacing(value: unknown): value is number {
++	return typeof value === 'number' && Number.isFinite(value) && value >= MIN_SPACING_MM;
++}
++
++// Whatever sits in the file where the template list should be, made into a
++// list that is safe to draw from: entries that cannot work are dropped, not
++// repaired into something the person never wrote, and a list left with
++// nothing in it is the built-in four — an empty menu would leave the Add
++// page button with nothing to add.
++function normalizePageTemplates(raw: unknown): PageTemplate[] {
++	if (!Array.isArray(raw)) return builtInPageTemplates();
++	const seen = new Set<string>();
++	const templates: PageTemplate[] = [];
++	for (const entry of raw as unknown[]) {
++		if (typeof entry !== 'object' || entry === null) continue;
++		const { id, name, style, spacing } = entry as Record<string, unknown>;
++		if (typeof id !== 'string' || !TEMPLATE_ID.test(id) || seen.has(id)) continue;
++		if (typeof style !== 'string' || !(TEMPLATE_STYLES as readonly string[]).includes(style)) continue;
++		const templateStyle = style as TemplateStyle;
++		seen.add(id);
++		templates.push({
++			id,
++			name: typeof name === 'string' && name.trim() ? name.trim() : TEMPLATE_STYLE_LABELS[templateStyle],
++			style: templateStyle,
++			// Hundredths of a millimetre: a number typed into a box comes
++			// back as 6.3999999999 after a unit conversion, and that is not
++			// what anyone wants to see in the box next time.
++			spacing: usableSpacing(spacing) ? Math.round(spacing * 100) / 100 : defaultSpacingMm(templateStyle),
++		});
++	}
++	return templates.length > 0 ? templates : builtInPageTemplates();
++}
++
+ // loadData() returns whatever is on disk — hand-edited, written by a future
+ // version, or absent entirely — so this is the boundary that has to be
+ // defensive. Every field falls back to its default when missing, wrongly
+@@ -119,9 +177,18 @@ export function normalizeSettings(raw: unknown): InklingSettings {
+ 	const rawFolder = typeof source.inkFileFolder === 'string' ? trimFolder(source.inkFileFolder.trim()) : '';
+ 	const inkFileFolder = rawFolder && isVaultPath(rawFolder) ? rawFolder : defaults.inkFileFolder;
+ 
++	const pageTemplates = normalizePageTemplates(source.pageTemplates);
++	// A default that names nothing in the list (deleted, or never there)
++	// becomes the first entry, so the button always has something to add.
++	const defaultPageTemplate = pageTemplates.some((t) => t.id === source.defaultPageTemplate)
++		? (source.defaultPageTemplate as string)
++		: (pageTemplates[0]?.id ?? defaults.defaultPageTemplate);
++
+ 	return {
+ 		defaultTemplate: pick(source.defaultTemplate, TEMPLATE_STYLES, defaults.defaultTemplate),
+ 		pageSize: pick(source.pageSize, ['letter', 'a4'] as const, defaults.pageSize),
++		pageTemplates,
++		defaultPageTemplate,
+ 		saveCadence: pick(source.saveCadence, ['auto', 'frequent'] as const, defaults.saveCadence),
+ 		pressure: bool(source.pressure, defaults.pressure),
+ 		smoothing: bool(source.smoothing, defaults.smoothing),
+@@ -144,6 +211,22 @@ export function normalizeSettings(raw: unknown): InklingSettings {
+ // label is `colorLabels.<hex>`, since those live one level down.
+ 
+ const COLOR_LABEL_KEY = 'colorLabels.';
++const PAGE_TEMPLATE_KEY = 'pageTemplates.';
++
++export type PageTemplateField = 'name' | 'style' | 'spacing';
++
++// `pageTemplates.<id>.<field>` — keyed by id, not position, so a control
++// keeps pointing at its own template while the list is reordered under it.
++export function pageTemplateKey(id: string, field: PageTemplateField): string {
++	return `${PAGE_TEMPLATE_KEY}${id}.${field}`;
++}
++
++function parsePageTemplateKey(key: string): { id: string; field: string } | null {
++	if (!key.startsWith(PAGE_TEMPLATE_KEY)) return null;
++	const rest = key.slice(PAGE_TEMPLATE_KEY.length);
++	const dot = rest.lastIndexOf('.');
++	return dot > 0 ? { id: rest.slice(0, dot), field: rest.slice(dot + 1) } : null;
++}
+ 
+ export function colorLabelKey(color: string): string {
+ 	return COLOR_LABEL_KEY + color.toLowerCase();
+@@ -151,7 +234,12 @@ export function colorLabelKey(color: string): string {
+ 
+ export function readSetting(settings: InklingSettings, key: string): unknown {
+ 	if (key.startsWith(COLOR_LABEL_KEY)) return settings.colorLabels[key.slice(COLOR_LABEL_KEY.length)];
+-	if (key === 'colorLabels' || !(key in settings)) return undefined;
++	if (key.startsWith(PAGE_TEMPLATE_KEY)) {
++		const parsed = parsePageTemplateKey(key);
++		const template = parsed && settings.pageTemplates.find((t) => t.id === parsed.id);
++		return template ? template[parsed.field as PageTemplateField] : undefined;
++	}
++	if (key === 'colorLabels' || key === 'pageTemplates' || !(key in settings)) return undefined;
+ 	return settings[key as keyof InklingSettings];
+ }
+ 
+@@ -169,7 +257,8 @@ export function writeSetting(settings: InklingSettings, key: string, value: unkn
+ 		if (!labels[color]?.trim()) delete labels[color];
+ 		return normalizeSettings({ ...settings, colorLabels: labels });
+ 	}
+-	if (key === 'colorLabels' || !(key in settings)) return settings;
++	if (key.startsWith(PAGE_TEMPLATE_KEY)) return writePageTemplateField(settings, key, value);
++	if (key === 'colorLabels' || key === 'pageTemplates' || !(key in settings)) return settings;
+ 
+ 	const candidate = normalizeSettings({ ...settings, [key]: value });
+ 	const kept = candidate[key as keyof InklingSettings];
+@@ -182,3 +271,62 @@ export function writeSetting(settings: InklingSettings, key: string, value: unkn
+ 		(key === 'inkFileFolder' && typeof value === 'string' && kept === trimFolder(value.trim()));
+ 	return accepted ? candidate : settings;
+ }
++
++// One field of one template. A value the field cannot hold leaves the old
++// one in place — an empty name, a style that does not exist, a spacing that
++// is not a number or is below the floor — which is what a half-typed number
++// in a box looks like on its way to a good one.
++function writePageTemplateField(settings: InklingSettings, key: string, value: unknown): InklingSettings {
++	const parsed = parsePageTemplateKey(key);
++	if (!parsed || !settings.pageTemplates.some((t) => t.id === parsed.id)) return settings;
++
++	let change: Partial<PageTemplate>;
++	if (parsed.field === 'name' && typeof value === 'string' && value.trim()) change = { name: value.trim() };
++	else if (parsed.field === 'style' && typeof value === 'string' && (TEMPLATE_STYLES as readonly string[]).includes(value)) {
++		change = { style: value as TemplateStyle };
++	} else if (parsed.field === 'spacing' && usableSpacing(value)) change = { spacing: value };
++	else return settings;
++
++	const pageTemplates = settings.pageTemplates.map((t) => (t.id === parsed.id ? { ...t, ...change } : t));
++	return normalizeSettings({ ...settings, pageTemplates });
++}
++
++// ---- Changing the list itself ----
++//
++// Pure, like everything else in this module: each takes the settings and
++// returns new ones, so the tab only has to assign the result and save.
++
++// The smallest unused `custom-<n>`: deterministic, and never a key that
++// clashes with a built-in or an earlier one.
++function newTemplateId(existing: readonly PageTemplate[]): string {
++	const taken = new Set(existing.map((t) => t.id));
++	let n = 1;
++	while (taken.has(`custom-${n}`)) n++;
++	return `custom-${n}`;
++}
++
++// A new template starts as a 5 mm grid — a useful thing to find in the list
++// and the one the person most likely wants to adjust.
++export function addPageTemplate(settings: InklingSettings): InklingSettings {
++	const template: PageTemplate = { id: newTemplateId(settings.pageTemplates), name: 'New template', style: 'grid', spacing: defaultSpacingMm('grid') };
++	return normalizeSettings({ ...settings, pageTemplates: [...settings.pageTemplates, template] });
++}
++
++// The last template cannot be deleted: the Add page button needs something
++// to add. Deleting the default hands that role to the first of the rest
++// (normalizeSettings does this, as it does for any default that names
++// nothing).
++export function deletePageTemplate(settings: InklingSettings, index: number): InklingSettings {
++	if (settings.pageTemplates.length <= 1 || index < 0 || index >= settings.pageTemplates.length) return settings;
++	return normalizeSettings({ ...settings, pageTemplates: settings.pageTemplates.filter((_, i) => i !== index) });
++}
++
++export function movePageTemplate(settings: InklingSettings, from: number, to: number): InklingSettings {
++	const count = settings.pageTemplates.length;
++	if (from === to || from < 0 || to < 0 || from >= count || to >= count) return settings;
++	const pageTemplates = [...settings.pageTemplates];
++	const [moved] = pageTemplates.splice(from, 1);
++	if (!moved) return settings;
++	pageTemplates.splice(to, 0, moved);
++	return normalizeSettings({ ...settings, pageTemplates });
++}
+diff --git a/src/settingsTab.ts b/src/settingsTab.ts
+index 3ca9614..e5c969f 100644
+--- a/src/settingsTab.ts
++++ b/src/settingsTab.ts
+@@ -1,7 +1,17 @@
+-import { PluginSettingTab, type App, type Plugin, type SettingDefinitionItem } from 'obsidian';
++import { PluginSettingTab, type App, type Plugin, type SettingDefinitionItem, type SettingDefinitionPage } from 'obsidian';
+ import { ALL_PRESET_COLORS } from './annotate';
+-import { TEMPLATE_STYLES, TEMPLATE_STYLE_LABELS } from './templates';
+-import { colorLabelKey, defaultSettings, readSetting, writeSetting, type InklingSettings } from './settings';
++import { MIN_SPACING_MM, TEMPLATE_STYLES, TEMPLATE_STYLE_LABELS, type PageTemplate } from './templates';
++import {
++	addPageTemplate,
++	colorLabelKey,
++	defaultSettings,
++	deletePageTemplate,
++	movePageTemplate,
++	pageTemplateKey,
++	readSetting,
++	writeSetting,
++	type InklingSettings,
++} from './settings';
+ 
+ // The Obsidian-facing half of the settings. The pure half — the shape,
+ // the defaults, the defensive read of whatever loadData() returns, and
+@@ -112,6 +122,34 @@ export class InklingSettingTab extends PluginSettingTab {
+ 					},
+ 				],
+ 			},
++			{
++				type: 'group',
++				heading: 'Page templates',
++				items: [
++					{
++						name: 'Default page template',
++						desc:
++							'What the + button in a PDF\'s toolbar adds. The arrow beside it lists every template; picking one there adds that page ' +
++							'once and leaves this alone. A new page always matches the size of the page it follows.',
++						aliases: ['add page', 'grid', 'ruled', 'dots'],
++						control: {
++							type: 'dropdown',
++							key: 'defaultPageTemplate',
++							defaultValue: defaults.defaultPageTemplate,
++							options: Object.fromEntries(this.plugin.settings.pageTemplates.map((t) => [t.id, t.name])),
++						},
++					},
++				],
++			},
++			{
++				type: 'list',
++				heading: 'Page templates',
++				emptyState: 'No templates.',
++				items: this.plugin.settings.pageTemplates.map((template) => this.templatePage(template)),
++				addItem: { name: 'Add template', action: () => void this.changeTemplates(addPageTemplate) },
++				onDelete: (index) => void this.changeTemplates((settings) => deletePageTemplate(settings, index)),
++				onReorder: (from, to) => void this.changeTemplates((settings) => movePageTemplate(settings, from, to)),
++			},
+ 			{
+ 				type: 'group',
+ 				heading: 'Ink blocks',
+@@ -175,6 +213,60 @@ export class InklingSettingTab extends PluginSettingTab {
+ 		];
+ 	}
+ 
++	// One template as a page of its own: its name, its style, and the gap
++	// between rules, dots or grid lines. Controls are keyed by the
++	// template's id, so reordering the list never points one at another.
++	private templatePage(template: PageTemplate): SettingDefinitionPage {
++		const current = (): PageTemplate | undefined => this.plugin.settings.pageTemplates.find((t) => t.id === template.id);
++		return {
++			type: 'page',
++			name: template.name,
++			displayValue: () => {
++				const now = current();
++				if (!now) return '';
++				return now.style === 'blank' ? TEMPLATE_STYLE_LABELS.blank : `${TEMPLATE_STYLE_LABELS[now.style]}, ${now.spacing} mm`;
++			},
++			items: [
++				{
++					name: 'Name',
++					control: { type: 'text', key: pageTemplateKey(template.id, 'name'), defaultValue: template.name, placeholder: 'Template name' },
++				},
++				{
++					name: 'Style',
++					control: {
++						type: 'dropdown',
++						key: pageTemplateKey(template.id, 'style'),
++						defaultValue: template.style,
++						options: Object.fromEntries(TEMPLATE_STYLES.map((style) => [style, TEMPLATE_STYLE_LABELS[style]])),
++					},
++				},
++				{
++					name: 'Spacing',
++					desc:
++						'Millimetres between rules, dots or grid lines. About 5 is graph paper and 8 to 9 is college-ruled. ' +
++						'Closer dots make a larger file that is slower to draw.',
++					visible: () => current()?.style !== 'blank',
++					control: {
++						type: 'number',
++						key: pageTemplateKey(template.id, 'spacing'),
++						defaultValue: template.spacing,
++						min: MIN_SPACING_MM,
++						step: 0.5,
++					},
++				},
++			],
++		};
++	}
++
++	// Adding, deleting or reordering changes which settings exist, not just
++	// a value, so the tab has to describe itself again (update), where a
++	// value change only needs the DOM re-checked (refreshDomState).
++	private async changeTemplates(change: (settings: InklingSettings) => InklingSettings): Promise<void> {
++		Object.assign(this.plugin.settings, change(this.plugin.settings));
++		await this.plugin.saveSettings();
++		this.update();
++	}
++
+ 	getControlValue(key: string): unknown {
+ 		return readSetting(this.plugin.settings, key);
+ 	}
+@@ -186,5 +278,7 @@ export class InklingSettingTab extends PluginSettingTab {
+ 		await this.plugin.saveSettings();
+ 		// The folder setting shows only for one location.
+ 		if (key === 'inkFileLocation') this.refreshDomState();
++		// Spacing means nothing on a blank page, so its row follows the style.
++		if (key.endsWith('.style')) this.refreshDomState();
+ 	}
+ }
+diff --git a/src/templates.ts b/src/templates.ts
+index b82c06c..e1a19c3 100644
+--- a/src/templates.ts
++++ b/src/templates.ts
+@@ -1,13 +1,28 @@
+-import { PDFDocument, PDFPage, PageSizes, rgb } from 'pdf-lib';
+-
+-export type TemplateStyle = 'blank' | 'lined' | 'dot-grid';
+-
+-export const TEMPLATE_STYLES: readonly TemplateStyle[] = ['blank', 'lined', 'dot-grid'];
++import {
++	LineCapStyle,
++	PDFDocument,
++	PDFPage,
++	PageSizes,
++	lineTo,
++	moveTo,
++	popGraphicsState,
++	pushGraphicsState,
++	rgb,
++	setLineCap,
++	setLineWidth,
++	setStrokingColor,
++	stroke,
++} from 'pdf-lib';
++
++export type TemplateStyle = 'blank' | 'lined' | 'dot-grid' | 'grid';
++
++export const TEMPLATE_STYLES: readonly TemplateStyle[] = ['blank', 'lined', 'dot-grid', 'grid'];
+ 
+ export const TEMPLATE_STYLE_LABELS: Record<TemplateStyle, string> = {
+ 	blank: 'Blank',
+ 	lined: 'Lined',
+ 	'dot-grid': 'Dot grid',
++	grid: 'Grid',
+ };
+ 
+ export const PAGE_SIZE = PageSizes.Letter;
+@@ -49,27 +64,90 @@ export function insertPageLike(pdf: PDFDocument, index: number, fallback: [numbe
+ // file; the PDF's own Info dictionary is the source of truth.
+ const TEMPLATE_KEYWORD_PREFIX = 'inkling:template=';
+ 
+-const RULE_SPACING = 24; // ~1/3in
++// A point is 1/72 inch, so one millimetre is this many of them. Templates
++// are described in millimetres because that is the unit people think about
++// ruling in (5 mm graph paper, 8 mm college ruled); the PDF itself is in
++// points.
++export const POINTS_PER_MM = 72 / 25.4;
++
++// The smallest spacing a template may have. Not a taste limit: a spacing of
++// zero or less would make the drawing loops below never advance, which
++// freezes Obsidian outright, and a fraction of a millimetre is already past
++// anything a pen can write between. Everything above this is the user's.
++export const MIN_SPACING_MM = 0.5;
++
++// What each style used before spacing was adjustable, in points. A new
++// handwritten note still uses exactly these, so it looks the way it always
++// did; they are also where a template's spacing starts when its style
++// changes.
++const DEFAULT_SPACING_PT: Record<TemplateStyle, number> = {
++	blank: 5 * POINTS_PER_MM,
++	lined: 24, // ~1/3in
++	'dot-grid': 18, // ~0.25in
++	grid: 5 * POINTS_PER_MM,
++};
++
++// In millimetres, to one decimal place — 24 pt is 8.47 mm, and nobody wants
++// to see that in a text box.
++export function defaultSpacingMm(style: TemplateStyle): number {
++	return Math.round((DEFAULT_SPACING_PT[style] / POINTS_PER_MM) * 10) / 10;
++}
++
++// A page background the user can name, keep and choose from. `spacing` is
++// in millimetres and means the gap between rules, between dots, or between
++// grid lines; a blank template ignores it but keeps one, so switching its
++// style to Grid starts from a sensible number rather than nothing.
++export interface PageTemplate {
++	id: string;
++	name: string;
++	style: TemplateStyle;
++	spacing: number;
++}
++
++// What a fresh install offers, and what settings fall back to if the saved
++// list is ever missing or unreadable. Deliberately the same four things
++// "Default template" has always offered, now with the grid added.
++export function builtInPageTemplates(): PageTemplate[] {
++	return TEMPLATE_STYLES.map((style) => ({
++		id: style,
++		name: TEMPLATE_STYLE_LABELS[style],
++		style,
++		spacing: defaultSpacingMm(style),
++	}));
++}
++
+ const RULE_COLOR = rgb(0.7, 0.78, 0.92);
+ const RULE_THICKNESS = 0.75;
++const GRID_THICKNESS = 0.5;
+ 
+ const DOT_MARGIN = 36; // ~0.5in
+-const DOT_SPACING = 18; // ~0.25in
+ const DOT_RADIUS = 0.6;
+ const DOT_COLOR = rgb(0.55, 0.55, 0.6);
+ 
++// A dot is a stroke of almost no length drawn with a round line cap, so it
++// comes out as a filled circle of the line's width. Almost: PDF paints a
++// round-capped zero-length segment too, but only because the specification
++// says to, and viewers differ on what they do with a degenerate path. A
++// hundredth of a point is invisible and takes that question off the table.
++const DOT_NUDGE = 0.01;
++
++// How many operators go to pdf-lib at once. pushOperators takes them as
++// arguments, and an engine refuses a call with more than about a hundred
++// thousand of those — which a fine dot grid on a large page would reach.
++const OPERATOR_CHUNK = 4000;
++
+ // Ruled edge to edge and top to bottom, rather than inside the 0.75in
+ // margin this used to leave on all four sides. That margin made sense for
+ // paper you print and hold; on screen it just fenced the writing into a box
+ // with a dead border around it, and on a phone — where the page is scaled
+ // down to a few hundred pixels wide — the unruled band cost a noticeable
+ // share of the space actually available to write in.
+-function drawLinedRuling(page: PDFPage): void {
++function drawLinedRuling(page: PDFPage, spacing: number): void {
+ 	const { width, height } = page.getSize();
+ 	// Starts one full line-height below the top edge rather than at it: a
+ 	// rule drawn exactly on y = height sits half off the page, and reads as
+ 	// a cropped line instead of the first line to write on.
+-	for (let y = height - RULE_SPACING; y > 0; y -= RULE_SPACING) {
++	for (let y = height - spacing; y > 0; y -= spacing) {
+ 		page.drawLine({
+ 			start: { x: 0, y },
+ 			end: { x: width, y },
+@@ -79,18 +157,55 @@ function drawLinedRuling(page: PDFPage): void {
+ 	}
+ }
+ 
+-function drawDotGrid(page: PDFPage): void {
++// Square graph paper: the same rules as above, crossed by vertical ones.
++function drawGrid(page: PDFPage, spacing: number): void {
+ 	const { width, height } = page.getSize();
+-	for (let y = height - DOT_MARGIN; y > DOT_MARGIN; y -= DOT_SPACING) {
+-		for (let x = DOT_MARGIN; x < width - DOT_MARGIN; x += DOT_SPACING) {
+-			page.drawCircle({ x, y, size: DOT_RADIUS, color: DOT_COLOR });
+-		}
++	for (let y = height - spacing; y > 0; y -= spacing) {
++		page.drawLine({ start: { x: 0, y }, end: { x: width, y }, thickness: GRID_THICKNESS, color: RULE_COLOR });
+ 	}
++	for (let x = spacing; x < width; x += spacing) {
++		page.drawLine({ start: { x, y: 0 }, end: { x, y: height }, thickness: GRID_THICKNESS, color: RULE_COLOR });
++	}
++}
++
++// Every dot is one point on a single path, stroked once — not a circle per
++// dot. A circle is four curves and a fill, so a page of them was tens of
++// thousands of operations and most of a megabyte once the dots got close;
++// this is a tenth of the file for the same picture, and the same dots in
++// pdf.js and poppler alike.
++function drawDotGrid(page: PDFPage, spacing: number): void {
++	const { width, height } = page.getSize();
++	const points: [number, number][] = [];
++	for (let y = height - DOT_MARGIN; y > DOT_MARGIN; y -= spacing) {
++		for (let x = DOT_MARGIN; x < width - DOT_MARGIN; x += spacing) points.push([x, y]);
++	}
++	if (points.length === 0) return;
++
++	page.pushOperators(pushGraphicsState(), setLineCap(LineCapStyle.Round), setLineWidth(DOT_RADIUS * 2), setStrokingColor(DOT_COLOR));
++	for (let i = 0; i < points.length; i += OPERATOR_CHUNK) {
++		const chunk = points.slice(i, i + OPERATOR_CHUNK);
++		page.pushOperators(...chunk.flatMap(([x, y]) => [moveTo(x, y), lineTo(x + DOT_NUDGE, y)]));
++	}
++	page.pushOperators(stroke(), popGraphicsState());
++}
++
++function drawStyle(page: PDFPage, style: TemplateStyle, spacingPt: number): void {
++	// Refused rather than clamped: this is the last line of defence against
++	// a loop that cannot end, and a caller that passes nonsense should get
++	// a blank page, not a frozen app.
++	if (!Number.isFinite(spacingPt) || spacingPt <= 0) return;
++	if (style === 'lined') drawLinedRuling(page, spacingPt);
++	else if (style === 'dot-grid') drawDotGrid(page, spacingPt);
++	else if (style === 'grid') drawGrid(page, spacingPt);
++}
++
++export function applyTemplate(page: PDFPage, template: Pick<PageTemplate, 'style' | 'spacing'>): void {
++	drawStyle(page, template.style, template.spacing * POINTS_PER_MM);
+ }
+ 
++// A style at its own default spacing — what a new handwritten note uses.
+ export function applyTemplateStyle(page: PDFPage, style: TemplateStyle): void {
+-	if (style === 'lined') drawLinedRuling(page);
+-	else if (style === 'dot-grid') drawDotGrid(page);
++	drawStyle(page, style, DEFAULT_SPACING_PT[style]);
+ }
+ 
+ // Pure string parsing (no pdf-lib dependency) so callers that already have
+diff --git a/styles.css b/styles.css
+index 6a307c5..7330af3 100644
+--- a/styles.css
++++ b/styles.css
+@@ -512,6 +512,15 @@
+ 	display: none;
+ }
+ 
++/* The arrow beside Add page: narrower than a full button and tucked against
++   the plus, so the two read as one control. Placed after the mobile sizing
++   above on purpose — both rules are as specific as each other, so the later
++   one wins, and this one should on a phone too. */
++.inkling-toolbar .inkling-tool-button.inkling-add-page-menu {
++	width: 20px;
++	margin-left: -6px;
++}
++
+ .is-mobile .inkling-width-slider {
+ 	width: 96px;
+ }
+diff --git a/tests/annotate/addPageToolbar.test.ts b/tests/annotate/addPageToolbar.test.ts
+new file mode 100644
+index 0000000..5631185
+--- /dev/null
++++ b/tests/annotate/addPageToolbar.test.ts
+@@ -0,0 +1,136 @@
++// @vitest-environment jsdom
++import { afterEach, beforeAll, describe, expect, it } from 'vitest';
++import { shownMenus, resetObsidianStubs } from '../harness/obsidian';
++import { AnnotationController } from '../../src/annotate/controller';
++import { buildToolbar } from '../../src/annotate/toolbar';
++import { builtInPageTemplates } from '../../src/templates';
++
++// The two controls beside each other in the PDF toolbar: the plus adds a
++// page with the default template, the arrow lists every template to add one
++// from. What is tested is the wiring — which template id reaches the view
++// when — since the drawing, the settings and the list each have their own
++// tests, and this is where a click turns into one of them.
++
++beforeAll(() => {
++	// Obsidian adds these to the DOM; jsdom has none of them.
++	const g = globalThis as unknown as Record<string, unknown>;
++	g.createEl = (tag: string, options: { cls?: string; text?: string } = {}) => {
++		const element = document.createElement(tag);
++		if (options.cls) element.className = options.cls;
++		if (options.text) element.textContent = options.text;
++		return element;
++	};
++	const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
++	proto.toggleClass = function (this: HTMLElement, cls: string, on: boolean) {
++		this.classList.toggle(cls, on);
++	};
++	proto.addClass = function (this: HTMLElement, cls: string) {
++		this.classList.add(cls);
++	};
++	proto.removeClass = function (this: HTMLElement, cls: string) {
++		this.classList.remove(cls);
++	};
++	proto.setCssProps = function (this: HTMLElement, props: Record<string, string>) {
++		for (const [name, value] of Object.entries(props)) this.style.setProperty(name, value);
++	};
++	proto.setText = function (this: HTMLElement, text: string) {
++		this.textContent = text;
++	};
++	proto.empty = function (this: HTMLElement) {
++		this.replaceChildren();
++	};
++});
++
++afterEach(() => resetObsidianStubs());
++
++function mount(defaultId = 'grid') {
++	const added: (string | undefined)[] = [];
++	const controller = new AnnotationController({
++		onAddPage: (templateId) => added.push(templateId),
++		getPageTemplates: () => ({ templates: builtInPageTemplates(), defaultId }),
++	});
++	controller.setCanManagePages(true);
++	const host = document.createElement('div');
++	buildToolbar(host, controller);
++	const button = (label: string) => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
++	return { added, controller, host, plus: button('Add page (default template)'), arrow: button('Add page from a template') };
++}
++
++describe('the Add page buttons', () => {
++	it('adds with the default template when the plus is pressed', () => {
++		const { plus, added } = mount();
++		plus.click();
++		// No id: the view reads the default from settings, so the toolbar
++		// does not have to know which it is.
++		expect(added).toEqual([undefined]);
++	});
++
++	it('opens a menu of every template from the arrow, under the button', () => {
++		const { arrow } = mount();
++		arrow.click();
++
++		expect(shownMenus).toHaveLength(1);
++		expect(shownMenus[0]!.items.map((item) => item.title)).toEqual(['Blank', 'Lined', 'Dot grid', 'Grid (default)']);
++		expect(shownMenus[0]!.position).not.toBeNull();
++	});
++
++	it('adds the template picked from the menu, and only once', () => {
++		const { arrow, added } = mount();
++		arrow.click();
++		shownMenus[0]!.items.find((item) => item.title === 'Dot grid')!.click!();
++
++		expect(added).toEqual(['dot-grid']);
++	});
++
++	it('reads the templates each time the menu opens', () => {
++		let templates = builtInPageTemplates();
++		const controller = new AnnotationController({ getPageTemplates: () => ({ templates, defaultId: 'blank' }) });
++		controller.setCanManagePages(true);
++		const host = document.createElement('div');
++		buildToolbar(host, controller);
++		const arrow = host.querySelector<HTMLButtonElement>('button[aria-label="Add page from a template"]')!;
++
++		arrow.click();
++		templates = [...templates, { id: 'custom-1', name: 'Mine', style: 'grid', spacing: 3 }];
++		arrow.click();
++
++		expect(shownMenus[0]!.items).toHaveLength(4);
++		expect(shownMenus[1]!.items.map((item) => item.title)).toContain('Mine');
++	});
++
++	it('hides both buttons where pages cannot be added, and shows both where they can', () => {
++		const withPages = mount();
++		expect([withPages.plus.hidden, withPages.arrow.hidden]).toEqual([false, false]);
++
++		const controller = new AnnotationController({});
++		controller.setCanManagePages(false);
++		const host = document.createElement('div');
++		buildToolbar(host, controller);
++		const hidden = ['Add page (default template)', 'Add page from a template'].map(
++			(label) => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.hidden,
++		);
++		expect(hidden).toEqual([true, true]);
++	});
++
++	it('disables both on a document that cannot be written to', () => {
++		const controller = new AnnotationController({});
++		controller.setCanManagePages(true);
++		controller.setReadOnly(true);
++		const host = document.createElement('div');
++		buildToolbar(host, controller);
++		const disabled = ['Add page (default template)', 'Add page from a template'].map(
++			(label) => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.disabled,
++		);
++		expect(disabled).toEqual([true, true]);
++	});
++
++	it('opens an empty menu, without failing, when there are no templates to list', () => {
++		const controller = new AnnotationController({});
++		controller.setCanManagePages(true);
++		const host = document.createElement('div');
++		buildToolbar(host, controller);
++		const arrow = host.querySelector<HTMLButtonElement>('button[aria-label="Add page from a template"]')!;
++		expect(() => arrow.click()).not.toThrow();
++		expect(shownMenus[0]!.items).toEqual([]);
++	});
++});
+diff --git a/tests/harness/obsidian.ts b/tests/harness/obsidian.ts
+index d0be38e..1fe6d74 100644
+--- a/tests/harness/obsidian.ts
++++ b/tests/harness/obsidian.ts
+@@ -233,6 +233,44 @@ export function setIcon(el: HTMLElement, name: string): void {
+ 	el.appendChild(svg);
+ }
+ 
++// A menu as far as a test can see one: the titles and click handlers it was
++// given, and where it was asked to appear. Nothing is drawn.
++export const shownMenus: Menu[] = [];
++
++export class MenuItem {
++	title = '';
++	icon: string | null = null;
++	click: (() => void) | null = null;
++	setTitle(title: string): this {
++		this.title = title;
++		return this;
++	}
++	setIcon(icon: string | null): this {
++		this.icon = icon;
++		return this;
++	}
++	onClick(callback: () => void): this {
++		this.click = callback;
++		return this;
++	}
++}
++
++export class Menu {
++	items: MenuItem[] = [];
++	position: { x: number; y: number } | null = null;
++	addItem(cb: (item: MenuItem) => void): this {
++		const item = new MenuItem();
++		cb(item);
++		this.items.push(item);
++		return this;
++	}
++	showAtPosition(position: { x: number; y: number }): this {
++		this.position = position;
++		shownMenus.push(this);
++		return this;
++	}
++}
++
+ export function setTooltip(el: HTMLElement, tooltip: string): void {
+ 	el.setAttribute('aria-label', tooltip);
+ }
+@@ -245,4 +283,5 @@ export function resetObsidianStubs(): void {
+ 	notices.length = 0;
+ 	openedModals.length = 0;
+ 	iconRequests.length = 0;
++	shownMenus.length = 0;
+ }
+diff --git a/tests/pageTemplateSettings.test.ts b/tests/pageTemplateSettings.test.ts
+new file mode 100644
+index 0000000..54651b4
+--- /dev/null
++++ b/tests/pageTemplateSettings.test.ts
+@@ -0,0 +1,212 @@
++import { describe, expect, it } from 'vitest';
++import {
++	addPageTemplate,
++	defaultSettings,
++	deletePageTemplate,
++	movePageTemplate,
++	normalizeSettings,
++	pageTemplateKey,
++	readSetting,
++	writeSetting,
++} from '../src/settings';
++
++const ids = (settings: { pageTemplates: { id: string }[] }) => settings.pageTemplates.map((t) => t.id);
++
++describe('page templates in settings', () => {
++	it('starts with the four built-ins, and a blank default', () => {
++		const settings = defaultSettings();
++		expect(ids(settings)).toEqual(['blank', 'lined', 'dot-grid', 'grid']);
++		expect(settings.defaultPageTemplate).toBe('blank');
++	});
++
++	it('gives each install its own list, not a shared one', () => {
++		const a = defaultSettings();
++		const b = defaultSettings();
++		a.pageTemplates[0]!.name = 'Changed';
++		expect(b.pageTemplates[0]!.name).toBe('Blank');
++	});
++
++	describe('reading what is on disk', () => {
++		const withList = (list: unknown, defaultPageTemplate?: unknown) =>
++			normalizeSettings({ pageTemplates: list, defaultPageTemplate });
++
++		it('falls back to the built-ins when the list is missing, wrong, or empty', () => {
++			for (const bad of [undefined, null, 'grid', 42, {}, []]) {
++				expect(ids(withList(bad))).toEqual(['blank', 'lined', 'dot-grid', 'grid']);
++			}
++		});
++
++		it('keeps a good template as written', () => {
++			const [t] = withList([{ id: 'slides', name: 'Slide dots', style: 'dot-grid', spacing: 7 }]).pageTemplates;
++			expect(t).toEqual({ id: 'slides', name: 'Slide dots', style: 'dot-grid', spacing: 7 });
++		});
++
++		it('drops entries that cannot work, without repairing them into something else', () => {
++			const settings = withList([
++				null,
++				'text',
++				{ id: 'a.b', name: 'dot in id', style: 'grid', spacing: 5 },
++				{ id: '', name: 'empty id', style: 'grid', spacing: 5 },
++				{ id: 'has space', name: 'space in id', style: 'grid', spacing: 5 },
++				{ id: 'future', name: 'unknown style', style: 'hexagons', spacing: 5 },
++				{ id: 'ok', name: 'Fine', style: 'grid', spacing: 5 },
++				{ id: 'ok', name: 'Duplicate id', style: 'lined', spacing: 9 },
++			]);
++			expect(settings.pageTemplates).toEqual([{ id: 'ok', name: 'Fine', style: 'grid', spacing: 5 }]);
++		});
++
++		it('names a nameless template after its style', () => {
++			const settings = withList([
++				{ id: 'x', name: '   ', style: 'grid', spacing: 5 },
++				{ id: 'y', style: 'lined', spacing: 8 },
++			]);
++			expect(settings.pageTemplates.map((t) => t.name)).toEqual(['Grid', 'Lined']);
++		});
++
++		it('replaces a spacing that cannot be drawn with the style\'s own', () => {
++			const spacings = [0, -2, NaN, Infinity, 0.4, '5', null, undefined].map(
++				(spacing, i) => withList([{ id: `t${i}`, name: 'T', style: 'grid', spacing }]).pageTemplates[0]!.spacing,
++			);
++			expect(new Set(spacings)).toEqual(new Set([5]));
++		});
++
++		it('does not cap how tight or how wide a spacing can be, beyond what would hang', () => {
++			const [fine, wide] = withList([
++				{ id: 'fine', name: 'F', style: 'dot-grid', spacing: 0.5 },
++				{ id: 'wide', name: 'W', style: 'grid', spacing: 200 },
++			]).pageTemplates;
++			expect([fine!.spacing, wide!.spacing]).toEqual([0.5, 200]);
++		});
++
++		it('rounds a spacing to hundredths of a millimetre', () => {
++			expect(withList([{ id: 'r', name: 'R', style: 'grid', spacing: 6.399999999 }]).pageTemplates[0]!.spacing).toBe(6.4);
++		});
++
++		it('keeps a default that names a template, and moves one that does not to the first', () => {
++			const list = [
++				{ id: 'one', name: 'One', style: 'grid', spacing: 5 },
++				{ id: 'two', name: 'Two', style: 'lined', spacing: 8 },
++			];
++			expect(withList(list, 'two').defaultPageTemplate).toBe('two');
++			expect(withList(list, 'gone').defaultPageTemplate).toBe('one');
++			expect(withList(list, 7).defaultPageTemplate).toBe('one');
++			expect(withList(list, undefined).defaultPageTemplate).toBe('one');
++		});
++
++		it('survives being saved and loaded', () => {
++			let settings = addPageTemplate(defaultSettings());
++			settings = writeSetting(settings, pageTemplateKey('custom-1', 'spacing'), 4.5);
++			settings = writeSetting(settings, 'defaultPageTemplate', 'custom-1');
++			expect(normalizeSettings(JSON.parse(JSON.stringify(settings)))).toEqual(settings);
++		});
++	});
++
++	describe('one field at a time, as the settings screen does it', () => {
++		it('reads each field by template id', () => {
++			const settings = defaultSettings();
++			expect(readSetting(settings, pageTemplateKey('grid', 'name'))).toBe('Grid');
++			expect(readSetting(settings, pageTemplateKey('grid', 'style'))).toBe('grid');
++			expect(readSetting(settings, pageTemplateKey('grid', 'spacing'))).toBe(5);
++			expect(readSetting(settings, pageTemplateKey('nope', 'spacing'))).toBeUndefined();
++			expect(readSetting(settings, 'pageTemplates')).toBeUndefined();
++		});
++
++		it('writes a spacing', () => {
++			const next = writeSetting(defaultSettings(), pageTemplateKey('grid', 'spacing'), 3.5);
++			expect(next.pageTemplates.find((t) => t.id === 'grid')!.spacing).toBe(3.5);
++		});
++
++		it('writes a name and a style', () => {
++			let next = writeSetting(defaultSettings(), pageTemplateKey('grid', 'name'), '  Lecture grid ');
++			next = writeSetting(next, pageTemplateKey('grid', 'style'), 'dot-grid');
++			expect(next.pageTemplates.find((t) => t.id === 'grid')).toMatchObject({ name: 'Lecture grid', style: 'dot-grid' });
++		});
++
++		it('refuses a value the field cannot hold, and keeps the old one', () => {
++			const before = defaultSettings();
++			for (const [field, bad] of [
++				['spacing', 0],
++				['spacing', -1],
++				['spacing', 0.4],
++				['spacing', NaN],
++				['spacing', '5'],
++				['name', ''],
++				['name', '   '],
++				['name', 7],
++				['style', 'hexagons'],
++				['style', 3],
++			] as const) {
++				expect(writeSetting(before, pageTemplateKey('grid', field), bad)).toBe(before);
++			}
++		});
++
++		it('ignores a template that does not exist, and the list as a whole', () => {
++			const before = defaultSettings();
++			expect(writeSetting(before, pageTemplateKey('nope', 'spacing'), 5)).toBe(before);
++			expect(writeSetting(before, 'pageTemplates', [])).toBe(before);
++		});
++
++		it('picks a default from the list, and refuses one that is not on it', () => {
++			const before = defaultSettings();
++			expect(writeSetting(before, 'defaultPageTemplate', 'grid').defaultPageTemplate).toBe('grid');
++			expect(writeSetting(before, 'defaultPageTemplate', 'nope')).toBe(before);
++		});
++	});
++
++	describe('changing the list', () => {
++		it('adds a 5 mm grid with a name to change, and never reuses an id in use', () => {
++			let settings = addPageTemplate(defaultSettings());
++			settings = addPageTemplate(settings);
++			expect(settings.pageTemplates.slice(-2)).toEqual([
++				{ id: 'custom-1', name: 'New template', style: 'grid', spacing: 5 },
++				{ id: 'custom-2', name: 'New template', style: 'grid', spacing: 5 },
++			]);
++		});
++
++		it('reuses the smallest id that has been freed', () => {
++			let settings = addPageTemplate(addPageTemplate(defaultSettings()));
++			settings = deletePageTemplate(settings, ids(settings).indexOf('custom-1'));
++			expect(ids(addPageTemplate(settings)).slice(-2)).toEqual(['custom-2', 'custom-1']);
++		});
++
++		it('deletes by position', () => {
++			const next = deletePageTemplate(defaultSettings(), 1);
++			expect(ids(next)).toEqual(['blank', 'dot-grid', 'grid']);
++		});
++
++		it('hands the default to the first template when the default is deleted', () => {
++			let settings = writeSetting(defaultSettings(), 'defaultPageTemplate', 'grid');
++			settings = deletePageTemplate(settings, ids(settings).indexOf('grid'));
++			expect(settings.defaultPageTemplate).toBe('blank');
++		});
++
++		it('keeps the default when some other template is deleted', () => {
++			let settings = writeSetting(defaultSettings(), 'defaultPageTemplate', 'grid');
++			settings = deletePageTemplate(settings, 0);
++			expect(settings.defaultPageTemplate).toBe('grid');
++		});
++
++		it('will not delete the last template, or one that is not there', () => {
++			let settings = defaultSettings();
++			expect(deletePageTemplate(settings, 99)).toBe(settings);
++			expect(deletePageTemplate(settings, -1)).toBe(settings);
++			for (let i = 0; i < 3; i++) settings = deletePageTemplate(settings, 0);
++			expect(settings.pageTemplates).toHaveLength(1);
++			expect(deletePageTemplate(settings, 0)).toBe(settings);
++		});
++
++		it('reorders, and leaves the default where it was by id', () => {
++			let settings = writeSetting(defaultSettings(), 'defaultPageTemplate', 'grid');
++			settings = movePageTemplate(settings, 3, 0);
++			expect(ids(settings)).toEqual(['grid', 'blank', 'lined', 'dot-grid']);
++			expect(settings.defaultPageTemplate).toBe('grid');
++		});
++
++		it('ignores a move that goes nowhere', () => {
++			const settings = defaultSettings();
++			expect(movePageTemplate(settings, 1, 1)).toBe(settings);
++			expect(movePageTemplate(settings, -1, 2)).toBe(settings);
++			expect(movePageTemplate(settings, 0, 9)).toBe(settings);
++		});
++	});
++});
+diff --git a/tests/pdf/pageTemplates.test.ts b/tests/pdf/pageTemplates.test.ts
+new file mode 100644
+index 0000000..be67611
+--- /dev/null
++++ b/tests/pdf/pageTemplates.test.ts
+@@ -0,0 +1,105 @@
++import { PDFDocument } from 'pdf-lib';
++import { describe, expect, it } from 'vitest';
++import {
++	MIN_SPACING_MM,
++	POINTS_PER_MM,
++	TEMPLATE_STYLES,
++	applyTemplate,
++	applyTemplateStyle,
++	builtInPageTemplates,
++	defaultSpacingMm,
++	type TemplateStyle,
++} from '../../src/templates';
++
++const LETTER: [number, number] = [612, 792];
++
++// A page with one template applied, saved, and read back by pdf.js — which
++// is the point: what counts is what a viewer finds in the file, not what
++// was asked of pdf-lib. `operators` is how many drawing instructions it has
++// to replay on every render, `bytes` what the page costs on disk.
++async function drawn(style: TemplateStyle, spacingMm: number, size: [number, number] = LETTER) {
++	const pdf = await PDFDocument.create();
++	const page = pdf.addPage(size);
++	applyTemplate(page, { style, spacing: spacingMm });
++	const bytes = await pdf.save();
++
++	const { getDocument } = await import('pdfjs-dist');
++	const doc = await getDocument({ data: bytes.slice() }).promise;
++	const list = await (await doc.getPage(1)).getOperatorList();
++	return { operators: list.fnArray.length, bytes: bytes.length };
++}
++
++describe('page templates', () => {
++	it('leaves a blank page with nothing on it', async () => {
++		expect((await drawn('blank', 5)).operators).toBe(0);
++	});
++
++	it.each(['lined', 'dot-grid', 'grid'] as const)('draws something for %s', async (style) => {
++		expect((await drawn(style, 6)).operators).toBeGreaterThan(0);
++	});
++
++	it.each(['lined', 'dot-grid', 'grid'] as const)('draws more of %s when the spacing is tighter', async (style) => {
++		const loose = await drawn(style, 10);
++		const tight = await drawn(style, 4);
++		// Dots are one path, so their operator count does not move; what
++		// grows is the path itself, and the file.
++		expect(tight.bytes).toBeGreaterThan(loose.bytes);
++	});
++
++	it('crosses its rules with vertical ones for a grid', async () => {
++		const lined = await drawn('lined', 5);
++		const grid = await drawn('grid', 5);
++		expect(grid.operators).toBeGreaterThan(lined.operators);
++	});
++
++	it('keeps a dot grid to a handful of operators however fine it is', async () => {
++		const { operators } = await drawn('dot-grid', 2);
++		expect(operators).toBeLessThan(20);
++	});
++
++	it('draws a dot grid so fine it would overflow a single call, without failing', async () => {
++		// 0.5 mm on Letter is a quarter of a million dots. Handed to pdf-lib
++		// in one call they would be arguments past what the engine accepts.
++		const { bytes } = await drawn('dot-grid', MIN_SPACING_MM);
++		expect(bytes).toBeGreaterThan(100_000);
++	});
++
++	it.each([0, -3, NaN, Infinity, -Infinity])('draws nothing, and finishes, for a spacing of %s', async (spacing) => {
++		const result = await drawn('grid', spacing);
++		expect(result.operators).toBe(0);
++		expect((await drawn('lined', spacing)).operators).toBe(0);
++		expect((await drawn('dot-grid', spacing)).operators).toBe(0);
++	});
++
++	it('draws nothing when no dot fits inside the margins', async () => {
++		expect((await drawn('dot-grid', 10, [60, 60])).operators).toBe(0);
++	});
++
++	it('gives a new note the ruling it always had', async () => {
++		// The old constants were in points (24 for rules, 18 for dots), so
++		// spelling them as millimetres and back lands a hair off in the
++		// last decimal places. The bytes can therefore differ by a digit;
++		// what has to match is how much is drawn.
++		const points = { blank: 0, lined: 24, 'dot-grid': 18, grid: 5 * POINTS_PER_MM };
++		for (const style of TEMPLATE_STYLES) {
++			const old = await PDFDocument.create();
++			applyTemplateStyle(old.addPage(LETTER), style);
++			const { getDocument } = await import('pdfjs-dist');
++			const oldDoc = await getDocument({ data: (await old.save()).slice() }).promise;
++			const oldOps = (await (await oldDoc.getPage(1)).getOperatorList()).fnArray.length;
++
++			const viaTemplate = await drawn(style, points[style] / POINTS_PER_MM);
++			// A rule that lands within a hair of the page edge may or may
++			// not be drawn depending on the last bit of the arithmetic, so
++			// allow one line's worth of difference.
++			expect(Math.abs(viaTemplate.operators - oldOps)).toBeLessThanOrEqual(8);
++		}
++	});
++
++	it('offers the four built-ins, each at the spacing its style used to have', () => {
++		const templates = builtInPageTemplates();
++		expect(templates.map((t) => t.id)).toEqual(['blank', 'lined', 'dot-grid', 'grid']);
++		expect(templates.map((t) => t.spacing)).toEqual([5, 8.5, 6.4, 5]);
++		expect(defaultSpacingMm('lined')).toBe(8.5);
++	});
++});
+diff --git a/tests/pdf/pdfViewAddPage.test.ts b/tests/pdf/pdfViewAddPage.test.ts
+new file mode 100644
+index 0000000..26d769f
+--- /dev/null
++++ b/tests/pdf/pdfViewAddPage.test.ts
+@@ -0,0 +1,166 @@
++// @vitest-environment jsdom
++import { PDFDocument } from 'pdf-lib';
++import { beforeAll, describe, expect, it, vi } from 'vitest';
++import { notices, TFile } from '../harness/obsidian';
++import { installSurfaceStubs } from '../harness/surface';
++import { ToolState } from '../../src/annotate';
++import { PdfAnnotateView } from '../../src/pdfView';
++import { defaultSettings, writeSetting, pageTemplateKey, type InklingSettings } from '../../src/settings';
++
++// The real addPage, against a real PDF held in memory: portrait Letter, a
++// landscape slide, portrait Letter. Everything around it that needs the app
++// (reading the file, reloading the view afterwards) is replaced, so what is
++// left is the part that matters — which template goes on the new page, what
++// size it is, and where it lands.
++
++beforeAll(() => {
++	installSurfaceStubs();
++	(HTMLElement.prototype as unknown as { empty(): void }).empty = function (this: HTMLElement) {
++		this.replaceChildren();
++	};
++});
++
++async function threePagePdf(): Promise<ArrayBuffer> {
++	const pdf = await PDFDocument.create();
++	pdf.addPage([612, 792]);
++	pdf.addPage([960, 540]);
++	pdf.addPage([612, 792]);
++	const bytes = await pdf.save();
++	return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
++}
++
++async function operatorsOnPage(bytes: ArrayBuffer, pageNumber: number): Promise<number> {
++	const { getDocument } = await import('pdfjs-dist');
++	const doc = await getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
++	return (await (await doc.getPage(pageNumber)).getOperatorList()).fnArray.length;
++}
++
++async function open(settings: InklingSettings, currentPage = 2) {
++	const original = await threePagePdf();
++	let written: ArrayBuffer | null = null;
++	const vault = {
++		readBinary: vi.fn(async () => original),
++		modifyBinary: vi.fn(async (_file: unknown, bytes: ArrayBuffer) => {
++			written = bytes;
++		}),
++		adapter: { stat: vi.fn(async () => ({ size: written?.byteLength ?? 0 })) },
++	};
++	const leaf = { app: { vault, workspace: { on: () => ({}) } } };
++	const view = new PdfAnnotateView(leaf as never, new ToolState(), () => settings);
++
++	const internals = view as unknown as {
++		currentFile: TFile;
++		currentPageNumber: number;
++		flushAnnotationsIfDirty: () => Promise<void>;
++		onLoadFile: ReturnType<typeof vi.fn>;
++		scrollToPage: ReturnType<typeof vi.fn>;
++		addPage(templateId?: string): Promise<void>;
++	};
++	internals.currentFile = new TFile('Notes/Lecture.pdf');
++	internals.currentPageNumber = currentPage;
++	internals.flushAnnotationsIfDirty = async () => {};
++	internals.onLoadFile = vi.fn(async () => {});
++	internals.scrollToPage = vi.fn();
++
++	return {
++		vault,
++		internals,
++		add: (templateId?: string) => internals.addPage(templateId),
++		saved: async () => PDFDocument.load(written!),
++		savedBytes: () => written!,
++	};
++}
++
++function withDefault(id: string): InklingSettings {
++	return writeSetting(defaultSettings(), 'defaultPageTemplate', id);
++}
++
++describe('adding a page to a PDF', () => {
++	it('puts the new page right after the one being read, and goes to it', async () => {
++		const { add, saved, internals } = await open(withDefault('blank'), 1);
++		await add();
++
++		const doc = await saved();
++		expect(doc.getPageCount()).toBe(4);
++		// Page 1 is portrait, so the new page 2 is too — and the landscape
++		// slide that was page 2 is now page 3.
++		expect(doc.getPage(1).getSize()).toEqual({ width: 612, height: 792 });
++		expect(doc.getPage(2).getSize()).toEqual({ width: 960, height: 540 });
++		expect(internals.onLoadFile).toHaveBeenCalledTimes(1);
++		expect(internals.scrollToPage).toHaveBeenCalledWith(2);
++	});
++
++	it('matches the size of the page it follows, whatever the paper-size setting says', async () => {
++		const { add, saved } = await open({ ...withDefault('blank'), pageSize: 'a4' }, 2);
++		await add();
++		expect((await saved()).getPage(2).getSize()).toEqual({ width: 960, height: 540 });
++	});
++
++	it('draws the default template from settings when none is picked', async () => {
++		const { add, savedBytes } = await open(withDefault('grid'));
++		await add();
++		expect(await operatorsOnPage(savedBytes(), 3)).toBeGreaterThan(0);
++	});
++
++	it('leaves the page empty when the default is blank', async () => {
++		const { add, savedBytes } = await open(withDefault('blank'));
++		await add();
++		expect(await operatorsOnPage(savedBytes(), 3)).toBe(0);
++	});
++
++	it('draws the template that was picked, not the default', async () => {
++		const fromDefault = await open(withDefault('blank'));
++		await fromDefault.add();
++		const picked = await open(withDefault('blank'));
++		await picked.add('grid');
++
++		expect(await operatorsOnPage(fromDefault.savedBytes(), 3)).toBe(0);
++		expect(await operatorsOnPage(picked.savedBytes(), 3)).toBeGreaterThan(0);
++	});
++
++	it('draws a template at the spacing it was given', async () => {
++		let settings = withDefault('grid');
++		const loose = await open(settings);
++		await loose.add();
++		settings = writeSetting(settings, pageTemplateKey('grid', 'spacing'), 2);
++		const tight = await open(settings);
++		await tight.add();
++
++		expect(await operatorsOnPage(tight.savedBytes(), 3)).toBeGreaterThan(await operatorsOnPage(loose.savedBytes(), 3));
++	});
++
++	it('leaves the default alone when another template is picked', async () => {
++		const settings = withDefault('grid');
++		const { add } = await open(settings);
++		await add('lined');
++		expect(settings.defaultPageTemplate).toBe('grid');
++	});
++
++	it('falls back to the default for a template id that no longer exists', async () => {
++		const { add, savedBytes } = await open(withDefault('grid'));
++		await add('deleted-in-settings');
++		expect(await operatorsOnPage(savedBytes(), 3)).toBeGreaterThan(0);
++	});
++
++	it('keeps the other pages as they were', async () => {
++		const { add, saved } = await open(withDefault('grid'), 2);
++		await add();
++		const doc = await saved();
++		// Portrait, the landscape slide, the new page (a landscape copy of
++		// the slide it follows), then the last portrait page.
++		expect(doc.getPages().map((page) => page.getSize().width)).toEqual([612, 960, 960, 612]);
++	});
++
++	it('says so, and writes nothing, when the file cannot be read', async () => {
++		const { add, vault } = await open(withDefault('grid'));
++		vault.readBinary.mockRejectedValueOnce(new Error('gone'));
++		const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
++		notices.length = 0;
++
++		await add();
++
++		expect(vault.modifyBinary).not.toHaveBeenCalled();
++		expect(notices.join(' ')).toContain('could not add a page');
++		errors.mockRestore();
++	});
++});
+diff --git a/tests/settingsTab.test.ts b/tests/settingsTab.test.ts
+index 2384b3f..52b8686 100644
+--- a/tests/settingsTab.test.ts
++++ b/tests/settingsTab.test.ts
+@@ -43,9 +43,13 @@ describe('the settings tab', () => {
+ 		const { tab } = openTab();
+ 		const keys = controls(tab).map((c) => c.key);
+ 
++		// Two settings are collections, so each of their members has a control
++		// of its own instead: a colour's label, and a page template's name,
++		// style and spacing.
+ 		const expected = [
+-			...Object.keys(defaultSettings()).filter((key) => key !== 'colorLabels'),
++			...Object.keys(defaultSettings()).filter((key) => key !== 'colorLabels' && key !== 'pageTemplates'),
+ 			...ALL_PRESET_COLORS.map(({ value }) => `colorLabels.${value.toLowerCase()}`),
++			...defaultSettings().pageTemplates.flatMap(({ id }) => [`pageTemplates.${id}.name`, `pageTemplates.${id}.style`, `pageTemplates.${id}.spacing`]),
+ 		];
+ 		expect([...keys].sort()).toEqual([...new Set(expected)].sort());
+ 		expect(new Set(keys).size).toBe(keys.length);
+diff --git a/tests/settingsTabTemplates.test.ts b/tests/settingsTabTemplates.test.ts
+new file mode 100644
+index 0000000..be5a6ea
+--- /dev/null
++++ b/tests/settingsTabTemplates.test.ts
+@@ -0,0 +1,126 @@
++import { describe, expect, it, vi } from 'vitest';
++import type { SettingDefinition, SettingDefinitionItem, SettingDefinitionPage } from 'obsidian';
++import { defaultSettings, pageTemplateKey, type InklingSettings } from '../src/settings';
++import { InklingSettingTab } from '../src/settingsTab';
++
++function openTab(stored: Partial<InklingSettings> = {}) {
++	const plugin = {
++		settings: { ...defaultSettings(), ...stored },
++		saveSettings: vi.fn(async () => {}),
++	};
++	const tab = new InklingSettingTab({} as never, plugin as never);
++	const update = vi.spyOn(tab, 'update');
++	return { tab, plugin, update };
++}
++
++// The list of templates, as the tab describes it to Obsidian: its pages and
++// the three things a list can be asked to do.
++interface TemplateList {
++	items: SettingDefinitionPage[];
++	addItem: { action: (el: HTMLElement) => void };
++	onDelete: (index: number) => void;
++	onReorder: (from: number, to: number) => void;
++}
++
++function templateList(tab: InklingSettingTab): TemplateList {
++	const list = tab.getSettingDefinitions().find((item) => 'type' in item && item.type === 'list');
++	if (!list) throw new Error('no list of templates');
++	return list as unknown as TemplateList;
++}
++
++const pageControls = (page: SettingDefinitionPage) => (page.items ?? []) as SettingDefinition[];
++
++describe('the page template settings', () => {
++	it('lists one page per template, in order', () => {
++		const { tab } = openTab();
++		expect(templateList(tab).items.map((page) => page.name)).toEqual(['Blank', 'Lined', 'Dot grid', 'Grid']);
++	});
++
++	it('gives each page a name, a style and a spacing, keyed by the template\'s id', () => {
++		const { tab } = openTab();
++		const grid = templateList(tab).items[3]!;
++		expect(pageControls(grid).map((def) => def.control?.key)).toEqual([
++			pageTemplateKey('grid', 'name'),
++			pageTemplateKey('grid', 'style'),
++			pageTemplateKey('grid', 'spacing'),
++		]);
++	});
++
++	it('offers the default as a choice among the templates by name', () => {
++		const { tab } = openTab();
++		const dropdown = flatten(tab.getSettingDefinitions()).find((def) => def.control?.key === 'defaultPageTemplate')?.control;
++		expect(dropdown).toMatchObject({ type: 'dropdown', options: { blank: 'Blank', lined: 'Lined', 'dot-grid': 'Dot grid', grid: 'Grid' } });
++	});
++
++	it('shows a template\'s style and spacing on its entry, and stays current as they change', async () => {
++		const { tab } = openTab();
++		const entry = templateList(tab).items[3]!;
++		const display = entry.displayValue as () => string;
++		expect(display()).toBe('Grid, 5 mm');
++
++		await tab.setControlValue(pageTemplateKey('grid', 'spacing'), 4);
++		expect(display()).toBe('Grid, 4 mm');
++		expect((templateList(tab).items[0]!.displayValue as () => string)()).toBe('Blank');
++	});
++
++	it('hides the spacing row for a blank template, and shows it again once it has a style', async () => {
++		const { tab } = openTab();
++		const spacingRow = (index: number) => pageControls(templateList(tab).items[index]!)[2]!;
++		expect((spacingRow(0).visible as () => boolean)()).toBe(false);
++		expect((spacingRow(3).visible as () => boolean)()).toBe(true);
++
++		await tab.setControlValue(pageTemplateKey('blank', 'style'), 'grid');
++		expect((spacingRow(0).visible as () => boolean)()).toBe(true);
++	});
++
++	it('saves a spacing, and refuses one that cannot be drawn', async () => {
++		const { tab, plugin } = openTab();
++		await tab.setControlValue(pageTemplateKey('grid', 'spacing'), 3.5);
++		expect(plugin.settings.pageTemplates.find((t) => t.id === 'grid')!.spacing).toBe(3.5);
++
++		await tab.setControlValue(pageTemplateKey('grid', 'spacing'), 0);
++		expect(plugin.settings.pageTemplates.find((t) => t.id === 'grid')!.spacing).toBe(3.5);
++	});
++
++	it('saves the default, in place on the object everything else holds', async () => {
++		const { tab, plugin } = openTab();
++		const held = plugin.settings;
++		await tab.setControlValue('defaultPageTemplate', 'grid');
++		expect(plugin.settings.defaultPageTemplate).toBe('grid');
++		expect(plugin.settings).toBe(held);
++	});
++
++	describe('changing the list', () => {
++		it('adds a template, saves, and describes itself again', async () => {
++			const { tab, plugin, update } = openTab();
++			templateList(tab).addItem.action({} as never);
++			await vi.waitFor(() => expect(update).toHaveBeenCalledTimes(1));
++
++			expect(plugin.saveSettings).toHaveBeenCalledTimes(1);
++			expect(plugin.settings.pageTemplates.at(-1)).toMatchObject({ id: 'custom-1', style: 'grid', spacing: 5 });
++			expect(templateList(tab).items.at(-1)!.name).toBe('New template');
++		});
++
++		it('deletes by position', async () => {
++			const { tab, plugin, update } = openTab();
++			templateList(tab).onDelete(1);
++			await vi.waitFor(() => expect(update).toHaveBeenCalledTimes(1));
++			expect(plugin.settings.pageTemplates.map((t) => t.id)).toEqual(['blank', 'dot-grid', 'grid']);
++		});
++
++		it('reorders, and each page keeps its own controls', async () => {
++			const { tab, plugin, update } = openTab();
++			templateList(tab).onReorder(3, 0);
++			await vi.waitFor(() => expect(update).toHaveBeenCalledTimes(1));
++
++			expect(plugin.settings.pageTemplates.map((t) => t.id)).toEqual(['grid', 'blank', 'lined', 'dot-grid']);
++			const first = templateList(tab).items[0]!;
++			expect(first.name).toBe('Grid');
++			expect(pageControls(first)[2]!.control?.key).toBe(pageTemplateKey('grid', 'spacing'));
++		});
++	});
++});
++
++function flatten(items: SettingDefinitionItem[]): SettingDefinition[] {
++	return items.flatMap((item) => ('items' in item && item.items ? flatten(item.items) : [item as SettingDefinition]));
++}

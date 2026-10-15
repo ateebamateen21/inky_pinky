@@ -43,9 +43,13 @@ describe('the settings tab', () => {
 		const { tab } = openTab();
 		const keys = controls(tab).map((c) => c.key);
 
+		// Two settings are collections, so each of their members has a control
+		// of its own instead: a colour's label, and a page template's name,
+		// style and spacing.
 		const expected = [
-			...Object.keys(defaultSettings()).filter((key) => key !== 'colorLabels'),
+			...Object.keys(defaultSettings()).filter((key) => key !== 'colorLabels' && key !== 'pageTemplates'),
 			...ALL_PRESET_COLORS.map(({ value }) => `colorLabels.${value.toLowerCase()}`),
+			...defaultSettings().pageTemplates.flatMap(({ id }) => [`pageTemplates.${id}.name`, `pageTemplates.${id}.style`, `pageTemplates.${id}.spacing`]),
 		];
 		expect([...keys].sort()).toEqual([...new Set(expected)].sort());
 		expect(new Set(keys).size).toBe(keys.length);

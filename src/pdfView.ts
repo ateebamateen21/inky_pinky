@@ -13,7 +13,7 @@ import { RENDER_SCALE, baseRenderScale, layoutRenderScale, zoomedRenderScale } f
 import { maxWriteIntervalMs } from './pdf/saveCadence';
 import { placeWithin } from './pdf/popoverPlacement';
 import { defaultSettings, type InklingSettings } from './settings';
-import { applyTemplateStyle, pageSizeFor, parseTemplateStyleFromKeywords, readTemplateStyle } from './templates';
+import { applyTemplate, insertPageLike, pageSizeFor } from './templates';
 
 // pdfjs-dist is pinned to an exact version (see package.json) — 5.4.624+
 // calls Uint8Array.prototype.toHex() unconditionally when computing a PDF's
@@ -397,7 +397,11 @@ export class PdfAnnotateView extends FileView {
 			// Shared with every other annotating surface, so the pen you set
 			// up in a note is the pen you get in a PDF (see annotate/toolState).
 			toolState,
-			onAddPage: () => void this.addPage(),
+			onAddPage: (templateId) => void this.addPage(templateId),
+			getPageTemplates: () => ({
+				templates: this.getSettings().pageTemplates,
+				defaultId: this.getSettings().defaultPageTemplate,
+			}),
 			getCurrentPage: () => this.currentPageNumber,
 			onAnnotationsChanged: (pageNumber) => this.markPageDirty(pageNumber),
 			onZoomSettled: (pageNumber, scale) => void this.upgradeResolution(pageNumber, scale),
@@ -734,14 +738,11 @@ export class PdfAnnotateView extends FileView {
 		this.controller.setReadOnly(refusal !== null);
 		if (refusal) this.showReadOnlyBanner(refusal);
 
-		let metadata: Awaited<ReturnType<PDFDocumentProxy['getMetadata']>>;
 		let firstPage: PDFPageProxy;
 		try {
-			// Both still depend on the same pdf.js worker that just parsed the
+			// Still depends on the same pdf.js worker that just parsed the
 			// document above — a worker that went quiet mid-parse could just as
-			// easily go quiet here instead, so these get the same guard.
-			metadata = await withTimeout(pdf.getMetadata(), PDF_LOAD_TIMEOUT_MS, 'Inkling: timed out reading this PDF.');
-			if (token !== this.renderToken) return;
+			// easily go quiet here instead, so this gets the same guard.
 			// Real textbooks/technical docs are hundreds of pages; rendering all
 			// of them eagerly on open is what made switching PDFs slow. Use one
 			// page's viewport to size every placeholder up front (most documents
@@ -755,8 +756,11 @@ export class PdfAnnotateView extends FileView {
 			return;
 		}
 		if (token !== this.renderToken) return;
-		const keywords = (metadata.info as { Keywords?: string }).Keywords;
-		this.controller.setCanManagePages(parseTemplateStyleFromKeywords(keywords) !== null);
+		// Any PDF can take new pages, not only the notes Inkling made itself.
+		// A document that cannot be written to safely is opened read-only
+		// (above), and read-only disables the button — see
+		// src/pdf/compatibility.ts.
+		this.controller.setCanManagePages(true);
 		const estimatedViewport = firstPage.getViewport({ scale: RENDER_SCALE });
 
 		// Stays subscribed to every placeholder for the life of the view
@@ -1396,7 +1400,7 @@ export class PdfAnnotateView extends FileView {
 		}
 	}
 
-	private async addPage(): Promise<void> {
+	private async addPage(templateId?: string): Promise<void> {
 		const file = this.currentFile;
 		if (!file || this.addingPage) return;
 		this.addingPage = true;
@@ -1414,9 +1418,20 @@ export class PdfAnnotateView extends FileView {
 			// currentPageNumber is 1-based; as a 0-based insertion index that
 			// is exactly "right after the page the user is currently on".
 			const insertIndex = Math.min(this.currentPageNumber, pdfDoc.getPageCount());
-			const style = readTemplateStyle(pdfDoc);
-			const newPage = pdfDoc.insertPage(insertIndex, pageSizeFor(this.getSettings().pageSize));
-			applyTemplateStyle(newPage, style);
+			// The one picked from the menu; else the default from settings,
+			// which is also what a pick that no longer exists gets (a
+			// template can be deleted while the menu is open). The list is
+			// never empty — settings see to that — so the last fallback is
+			// only to keep the types honest.
+			const { pageTemplates, defaultPageTemplate } = this.getSettings();
+			const template =
+				pageTemplates.find((t) => t.id === templateId) ??
+				pageTemplates.find((t) => t.id === defaultPageTemplate) ??
+				pageTemplates[0];
+			// Shaped like the page it follows (size and rotation), falling back to
+			// the paper-size setting only when there is no page to copy from.
+			const newPage = insertPageLike(pdfDoc, insertIndex, pageSizeFor(this.getSettings().pageSize));
+			if (template) applyTemplate(newPage, template);
 
 			const updatedBytes = await pdfDoc.save();
 			await writeBinarySafely(this.app.vault, file, toArrayBuffer(updatedBytes));

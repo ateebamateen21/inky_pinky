@@ -1,4 +1,5 @@
-import { setTooltip } from 'obsidian';
+import { Menu, setTooltip } from 'obsidian';
+import type { TemplateStyle } from '../templates';
 import { setIconOrText } from '../icon';
 import { AnnotationController } from './controller';
 import { MAX_ZOOM } from './pointer';
@@ -69,6 +70,16 @@ function iconButton(className: string, spec: ButtonSpec, onClick: () => void): H
 	button.addEventListener('click', onClick);
 	return button;
 }
+
+// Lucide icon names, one per background, for the Add page menu. Cosmetic:
+// the title carries the meaning, so an icon an older Obsidian lacks leaves
+// a plain entry rather than a broken one.
+const TEMPLATE_ICONS: Record<TemplateStyle, string> = {
+	blank: 'file',
+	lined: 'align-justify',
+	'dot-grid': 'grip',
+	grid: 'grid-3x3',
+};
 
 function separator(): HTMLElement {
 	const sep = el('div', 'inkling-toolbar-sep');
@@ -181,13 +192,36 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		{ icon: 'file-x', fallback: '⌧', title: 'Clear page' },
 		() => controller.clearCurrentPage(),
 	);
-	// Only meaningful for plugin-created handwritten notes — hidden for
-	// imported PDFs (books, papers, ...) via the refresh() below, since
-	// there's no notion of "add a blank/lined/dot-grid page" to a book.
+	// Two controls that work as one: the plus adds a page with the default
+	// template (chosen in settings), and the arrow beside it lists every
+	// template to add one from. Picking from the list adds that page once;
+	// it never changes what the plus does. Both are hidden where pages
+	// cannot be added (an ink block in a note) and both are disabled on a
+	// document that cannot be written to.
 	const addPageButton = iconButton(
 		'inkling-tool-button',
-		{ icon: 'file-plus', fallback: '＋', title: 'Add page' },
+		{ icon: 'file-plus', fallback: '＋', title: 'Add page (default template)' },
 		() => controller.addPage(),
+	);
+	const addPageMenuButton = iconButton(
+		'inkling-tool-button inkling-add-page-menu',
+		{ icon: 'chevron-down', fallback: '▾', title: 'Add page from a template' },
+		() => {
+			const { templates, defaultId } = controller.getPageTemplates();
+			const menu = new Menu();
+			for (const template of templates) {
+				menu.addItem((item) =>
+					item
+						.setTitle(template.id === defaultId ? `${template.name} (default)` : template.name)
+						.setIcon(TEMPLATE_ICONS[template.style])
+						.onClick(() => controller.addPage(template.id)),
+				);
+			}
+			// Positioned from the button rather than from the click, so the
+			// same call works for a pen tap, a finger and the keyboard.
+			const rect = addPageMenuButton.getBoundingClientRect();
+			menu.showAtPosition({ x: rect.left, y: rect.bottom });
+		},
 	);
 	// Darkens the page under the ink. A reading action like zoom, so it
 	// stays available on a document that cannot be written to.
@@ -204,7 +238,7 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		{ icon: 'panel-left', fallback: '☰', title: 'Outline and find' },
 		() => controller.toggleNavigation(),
 	);
-	actionGroup.append(undoButton, redoButton, separator(), deleteButton, clearPageButton, addPageButton, invertButton, navButton);
+	actionGroup.append(undoButton, redoButton, separator(), deleteButton, clearPageButton, addPageButton, addPageMenuButton, invertButton, navButton);
 
 	// Readouts, not controls — pushed to the far end of the strip (see
 	// .inkling-toolbar-status) so the things you press stay together on the
@@ -281,7 +315,7 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		const noteButton = toolButtons.get('note');
 		if (noteButton && !controller.canTakeNotes()) noteButton.hidden = true;
 		for (const group of [colorGroup, widthGroup, statusGroup]) group.hidden = collapsed;
-		for (const button of [redoButton, deleteButton, clearPageButton, addPageButton, invertButton, navButton]) button.hidden = collapsed;
+		for (const button of [redoButton, deleteButton, clearPageButton, addPageButton, addPageMenuButton, invertButton, navButton]) button.hidden = collapsed;
 		setIconOrText(collapseButton, collapsed ? 'chevrons-down' : 'chevrons-up', collapsed ? '⌄' : '⌃');
 		setTooltip(collapseButton, collapsed ? 'Show tools' : 'Collapse tools');
 		for (const [tool, button] of toolButtons) {
@@ -363,11 +397,13 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		// the second has to win whenever the strip is open.
 		if (!collapsed) {
 			addPageButton.hidden = !controller.getCanManagePages();
+			addPageMenuButton.hidden = addPageButton.hidden;
 			navButton.hidden = !controller.canToggleNavigation();
 			invertButton.hidden = !controller.canInvert();
 		}
 		invertButton.toggleClass('is-active', controller.isInverted());
 		addPageButton.disabled = readOnly;
+		addPageMenuButton.disabled = readOnly;
 	};
 	refresh();
 
