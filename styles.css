@@ -512,6 +512,15 @@
 	display: none;
 }
 
+/* The arrow beside Add page: narrower than a full button and tucked against
+   the plus, so the two read as one control. Placed after the mobile sizing
+   above on purpose — both rules are as specific as each other, so the later
+   one wins, and this one should on a phone too. */
+.inkling-toolbar .inkling-tool-button.inkling-add-page-menu {
+	width: 20px;
+	margin-left: -6px;
+}
+
 .is-mobile .inkling-width-slider {
 	width: 96px;
 }

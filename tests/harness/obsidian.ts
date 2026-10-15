@@ -233,6 +233,44 @@ export function setIcon(el: HTMLElement, name: string): void {
 	el.appendChild(svg);
 }
 
+// A menu as far as a test can see one: the titles and click handlers it was
+// given, and where it was asked to appear. Nothing is drawn.
+export const shownMenus: Menu[] = [];
+
+export class MenuItem {
+	title = '';
+	icon: string | null = null;
+	click: (() => void) | null = null;
+	setTitle(title: string): this {
+		this.title = title;
+		return this;
+	}
+	setIcon(icon: string | null): this {
+		this.icon = icon;
+		return this;
+	}
+	onClick(callback: () => void): this {
+		this.click = callback;
+		return this;
+	}
+}
+
+export class Menu {
+	items: MenuItem[] = [];
+	position: { x: number; y: number } | null = null;
+	addItem(cb: (item: MenuItem) => void): this {
+		const item = new MenuItem();
+		cb(item);
+		this.items.push(item);
+		return this;
+	}
+	showAtPosition(position: { x: number; y: number }): this {
+		this.position = position;
+		shownMenus.push(this);
+		return this;
+	}
+}
+
 export function setTooltip(el: HTMLElement, tooltip: string): void {
 	el.setAttribute('aria-label', tooltip);
 }
@@ -245,4 +283,5 @@ export function resetObsidianStubs(): void {
 	notices.length = 0;
 	openedModals.length = 0;
 	iconRequests.length = 0;
+	shownMenus.length = 0;
 }
