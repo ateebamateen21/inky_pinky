@@ -322,6 +322,14 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		const p2 = touches.get(ids[1]);
 		if (!p1 || !p2) return;
 
+		// Releasing the first finger's capture above also gave up the
+		// browser's automatic "keep sending this finger to the element it
+		// landed on". Without this, that finger could lift after sliding
+		// onto another page or the toolbar, its "lifted" event would never
+		// reach this page, and it would stay in `touches` as a ghost —
+		// which made the next single-finger swipe look like a pinch.
+		for (const id of ids) capturePointer(el, id);
+
 		const rect = placeholder.getBoundingClientRect();
 		const mid = midpoint(p1, p2);
 		const zoom = getZoom(content);
@@ -491,6 +499,20 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		}, WHEEL_SETTLE_MS);
 	};
 
+	// Safety net for the ghost-finger bug: a finger this page is still
+	// tracking can lift somewhere this page never hears about. Listening on
+	// the whole document, in the capture phase so nothing in between can
+	// swallow it, means a lifted or cancelled finger is always dropped from
+	// every page that was tracking it. When the event also reaches `el`, the
+	// second call finds nothing left to do.
+	const doc = el.ownerDocument;
+	const onDocumentTouchEnd = (event: PointerEvent) => {
+		if (event.pointerType !== 'touch' || !touches.has(event.pointerId)) return;
+		endGesture(event, event.type === 'pointercancel');
+	};
+	doc.addEventListener('pointerup', onDocumentTouchEnd, true);
+	doc.addEventListener('pointercancel', onDocumentTouchEnd, true);
+
 	el.addEventListener('pointerdown', onPointerDown);
 	el.addEventListener('pointermove', onPointerMove);
 	el.addEventListener('pointerup', onPointerUp);
@@ -503,6 +525,13 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 	return () => {
 		stopMomentum();
 		if (wheelSettleHandle !== null) window.clearTimeout(wheelSettleHandle);
+		doc.removeEventListener('pointerup', onDocumentTouchEnd, true);
+		doc.removeEventListener('pointercancel', onDocumentTouchEnd, true);
+		// Nothing outlives the page: a finger still "down" in here would
+		// otherwise be remembered by a closure that is about to be dropped.
+		touches.clear();
+		pinch = null;
+		touchPan = null;
 		el.removeEventListener('pointerdown', onPointerDown);
 		el.removeEventListener('pointermove', onPointerMove);
 		el.removeEventListener('pointerup', onPointerUp);
