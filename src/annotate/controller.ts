@@ -166,6 +166,15 @@ export interface AnnotationControllerOptions {
 	// that lays pages out in a scrolling list — the PDF view — can do this;
 	// omitted, there is no view zoom and every zoom moves a page alone.
 	setViewZoom?: (zoom: number, hold?: ViewZoomHold) => void;
+	// Re-measures the pane and resizes every page to its current width, so
+	// "fit to width" means the pane as it is now rather than as it was when
+	// the pages were first laid out. Canvas resolution and annotations are
+	// untouched — only the size pages are drawn at changes.
+	refitWidth?: () => void;
+	// The view zoom at which `placeholder`'s whole page fits the pane's
+	// height, and what to hold still while getting there (the page's top
+	// edge at the top of the pane).
+	fitPage?: (placeholder: HTMLElement) => { zoom: number; hold: ViewZoomHold };
 	// Canvas pixels per unit of pen width on a page, asked each time ink is
 	// made. Omitted, a unit is one pixel. A host that re-backs a page at a
 	// different resolution — the PDF view does, whenever a zoom sharpens one
@@ -252,6 +261,11 @@ export class AnnotationController {
 	// the view, smaller when they have been shrunk together. Shared by every
 	// page, unlike the pinch-zoom above, which each page keeps for itself.
 	private viewZoom = 1;
+	// Zoom locks: stop pinch and Ctrl+wheel from moving one rung of the
+	// ladder (see zoomLadder.ts). Kept only for as long as the view is
+	// open, and never applied to the toolbar buttons, which are deliberate.
+	private viewZoomLocked = false;
+	private pageZoomLocked = false;
 	// Coalesced pointer samples arrive several per animation frame (see
 	// annotate/pointer.ts) and each one used to repaint the overlay. The
 	// picture can only change once a frame, so the extra repaints were pure
@@ -580,6 +594,71 @@ export class AnnotationController {
 		if (next.page !== page) this.zoomCurrentPage(() => next.page);
 	}
 
+	isViewZoomLocked(): boolean {
+		return this.viewZoomLocked;
+	}
+
+	isPageZoomLocked(): boolean {
+		return this.pageZoomLocked;
+	}
+
+	toggleViewZoomLock(): void {
+		this.viewZoomLocked = !this.viewZoomLocked;
+		this.notify();
+	}
+
+	togglePageZoomLock(): void {
+		this.pageZoomLocked = !this.pageZoomLocked;
+		this.notify();
+	}
+
+	// Fit to the width of the pane, as it is right now, and put every page
+	// back to 1x. Unlike the readout click this is one press and covers
+	// every page, including magnified ones that are scrolled out of sight.
+	fitWidth(): void {
+		this.options.refitWidth?.();
+		this.resetAllPageZooms();
+		const target = this.currentPageTarget();
+		if (target) this.applyViewZoom(1, this.viewportHold(target.mount, target.placeholder));
+		else this.applyViewZoom(1);
+	}
+
+	// Shrinks the view just enough that the current page fits the pane's
+	// height — the landscape fix. Never magnifies: if the page already fits,
+	// this is the same as fit width.
+	fitPage(): void {
+		const target = this.currentPageTarget();
+		const fit = target ? this.options.fitPage?.(target.placeholder) : undefined;
+		if (!target || !fit) {
+			this.fitWidth();
+			return;
+		}
+		this.options.refitWidth?.();
+		this.resetAllPageZooms();
+		// Measured after the re-fit and the reset, because both change the
+		// page's height; asking the host first would size to stale numbers.
+		const measured = this.options.fitPage?.(target.placeholder) ?? fit;
+		this.applyViewZoom(measured.zoom, measured.hold);
+	}
+
+	// Every page back to 1x, mounted or not. A page scrolled out of sight
+	// but still magnified is what a lone "reset" on the current page used
+	// to leave behind.
+	private resetAllPageZooms(): void {
+		for (const [pageNumber, mount] of this.pages) {
+			if (currentZoom(mount.content) <= 1) continue;
+			const placeholder = mount.content.parentElement;
+			if (!placeholder) continue;
+			const rect = placeholder.getBoundingClientRect();
+			zoomAbout(mount.content, placeholder, 1, { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+			// Same signal a settled pinch sends, so the page's canvas drops
+			// back to its normal resolution too.
+			this.options.onZoomSettled?.(pageNumber, 1);
+		}
+		this.zoomByPage.clear();
+		this.notify();
+	}
+
 	// Back to normal in two presses: a magnified page returns to 1x first,
 	// then pages that were shrunk return to fit-to-width.
 	resetZoom(): void {
@@ -756,11 +835,13 @@ export class AnnotationController {
 				this.notify();
 			},
 			onZoomEnd: (scale) => this.options.onZoomSettled?.(pageNumber, scale),
+			isPageZoomLocked: () => this.pageZoomLocked,
 			// Offered only when the host can actually shrink its pages.
 			...(this.options.setViewZoom
 				? {
 						getViewZoom: () => this.viewZoom,
 						setViewZoom: (zoom: number, hold: ViewZoomHold) => this.applyViewZoom(zoom, hold),
+						isViewZoomLocked: () => this.viewZoomLocked,
 					}
 				: {}),
 		};

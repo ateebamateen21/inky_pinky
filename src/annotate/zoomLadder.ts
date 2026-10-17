@@ -27,10 +27,23 @@ export interface LadderLimits {
 	// the view rung is then locked at fit-to-width and only page zoom moves.
 	minView: number;
 	maxPage: number;
+	// A locked rung is skipped, not blocked: with the view frozen a pinch
+	// out goes straight to magnifying the page, rather than waiting on a
+	// view rung that will never move and leaving the pinch doing nothing.
+	freezeView?: boolean;
+	freezePage?: boolean;
 }
 
 function clamp(value: number, min: number, max: number): number {
 	return Math.min(max, Math.max(min, value));
+}
+
+// Arithmetic on these can land a hair off an exact value (0.9999999999 for
+// "fit to width"), which the toolbar would read as "shrunk" and show a
+// stray "100%". Anything that close to a rung's resting value is it.
+const SNAP = 1e-9;
+function snapToOne(value: number): number {
+	return Math.abs(value - 1) < SNAP ? 1 : value;
 }
 
 // `factor` is the total change asked for since (view, page) were read:
@@ -38,19 +51,28 @@ function clamp(value: number, min: number, max: number): number {
 // state rather than frame by frame, so a pinch that reverses direction
 // retraces exactly the same path.
 export function stepLadder(view: number, page: number, factor: number, limits: LadderLimits): Ladder {
-	const startView = clamp(view, limits.minView, 1);
-	const startPage = clamp(page, 1, limits.maxPage);
+	let nextView = clamp(view, limits.minView, 1);
+	let nextPage = clamp(page, 1, limits.maxPage);
+	let remaining = factor;
 
-	if (factor >= 1) {
-		// How much more zoom the view rung can take before it is back at
+	if (remaining >= 1) {
+		// View rung first: it can take only as much as brings it back to
 		// fit-to-width; anything beyond that spills into the page rung.
-		const roomInView = 1 / startView;
-		if (factor <= roomInView) return { view: Math.min(startView * factor, 1), page: startPage };
-		return { view: 1, page: clamp(startPage * (factor / roomInView), 1, limits.maxPage) };
+		if (!limits.freezeView) {
+			const used = Math.min(remaining, 1 / nextView);
+			nextView = Math.min(nextView * used, 1);
+			remaining /= used;
+		}
+		if (!limits.freezePage && remaining > 1 + SNAP) nextPage = clamp(nextPage * remaining, 1, limits.maxPage);
+	} else {
+		// Zooming out: the page rung gives back everything above 1 first.
+		if (!limits.freezePage) {
+			const used = Math.max(remaining, 1 / nextPage);
+			nextPage = Math.max(nextPage * used, 1);
+			remaining /= used;
+		}
+		if (!limits.freezeView && remaining < 1 - SNAP) nextView = clamp(nextView * remaining, limits.minView, 1);
 	}
 
-	// Zooming out: the page rung gives back everything above 1 first.
-	const roomInPage = startPage;
-	if (factor >= 1 / roomInPage) return { view: startView, page: startPage * factor };
-	return { view: clamp(startView * factor * roomInPage, limits.minView, 1), page: 1 };
+	return { view: snapToOne(nextView), page: snapToOne(nextPage) };
 }

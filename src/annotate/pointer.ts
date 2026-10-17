@@ -28,6 +28,11 @@ export interface GestureHandlers {
 	// as before. `getViewZoom` is 1 when pages fit the width of the view.
 	getViewZoom?(): number;
 	setViewZoom?(zoom: number, hold: ViewZoomHold): void;
+	// Zoom locks, read fresh on every frame of a pinch or wheel so a lock
+	// toggled mid-gesture takes effect at once. They stop gestures only;
+	// the toolbar's buttons are deliberate presses and ignore them.
+	isViewZoomLocked?(): boolean;
+	isPageZoomLocked?(): boolean;
 }
 
 // What a view-level zoom has to keep still: the point `fx`/`fy` of the way
@@ -456,6 +461,8 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 				const next = stepLadder(pinch.startView, pinch.startScale, distance(p1, p2) / pinch.startDistance, {
 					minView: canZoomView ? MIN_VIEW_ZOOM : 1,
 					maxPage: MAX_ZOOM,
+					freezeView: handlers?.isViewZoomLocked?.() ?? false,
+					freezePage: handlers?.isPageZoomLocked?.() ?? false,
 				});
 
 				// The view rung first: resizing the pages changes the box the
@@ -581,6 +588,8 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		const next = stepLadder(startView, currentZoom(content), factor, {
 			minView: handlers?.setViewZoom ? MIN_VIEW_ZOOM : 1,
 			maxPage: MAX_ZOOM,
+			freezeView: handlers?.isViewZoomLocked?.() ?? false,
+			freezePage: handlers?.isPageZoomLocked?.() ?? false,
 		});
 		if (handlers?.setViewZoom && next.view !== startView) {
 			const rect = placeholder.getBoundingClientRect();
