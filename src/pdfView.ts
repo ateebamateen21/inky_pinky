@@ -4,6 +4,7 @@ import { PDFDocument } from 'pdf-lib';
 import { AnnotationController, buildToolbar, paletteFor, ToolState, type Annotation, type Point, type ToolType } from './annotate';
 import { createId } from './annotate/id';
 import type { ViewZoomHold } from './annotate/pointer';
+import { MIN_VIEW_ZOOM } from './annotate/zoomLadder';
 import { AnnotationWriterClient } from './pdf/annotationWriterClient';
 import { toArrayBuffer } from './binary';
 import { appendBinarySafely, canAppendBinary, writeBinarySafely } from './vaultWrite';
@@ -315,6 +316,12 @@ export class PdfAnnotateView extends FileView {
 	// annotations live in the space it was rendered in, so its size must not
 	// move underneath them.
 	private layoutScales = new Map<number, number>();
+	// The pane width each page's layout scale was measured against, so a
+	// re-fit can tell how far each page is from the pane as it is now.
+	private layoutWidths = new Map<number, number>();
+	// The whole-view zoom last applied (1 = fit to width); read back by
+	// fitPage, which has to know what the pages' heights are relative to.
+	private viewZoomApplied = 1;
 	// Pages currently mid-upgradeResolution — guards against a second pinch
 	// ending before the first page's re-render has finished.
 	private readonly upgradingPages = new Set<number>();
@@ -407,6 +414,8 @@ export class PdfAnnotateView extends FileView {
 			onAnnotationsChanged: (pageNumber) => this.markPageDirty(pageNumber),
 			onZoomSettled: (pageNumber, scale) => void this.upgradeResolution(pageNumber, scale),
 			setViewZoom: (zoom, hold) => this.setViewZoom(zoom, hold),
+			refitWidth: () => this.refitWidth(),
+			fitPage: (placeholder) => this.fitPage(placeholder),
 			// Relative to the page's first render, so an unzoomed page draws
 			// exactly as it always has, and a page upgradeResolution has
 			// since re-backed denser draws the same width in PDF space rather
@@ -846,11 +855,76 @@ export class PdfAnnotateView extends FileView {
 	// page after the resize rather than by scaling the scroll position, so
 	// it stays exact however many gaps lie above it.
 	private setViewZoom(zoom: number, hold?: ViewZoomHold): void {
+		this.viewZoomApplied = zoom;
 		this.contentEl.setCssProps({ '--inkling-view-zoom': String(zoom) });
 		if (!hold) return;
 		const rect = hold.placeholder.getBoundingClientRect();
 		this.contentEl.scrollTop += rect.top + hold.fy * rect.height - hold.screen.y;
 		this.scheduleCurrentPageUpdate();
+	}
+
+	// "Fit to width" as the pane is *now*. Pages were laid out for the pane
+	// they first rendered in and keep that size when it changes (a wider
+	// pane leaves them narrower than the view), so this scales each page by
+	// how far the pane has moved since its own layout. Only the size pages
+	// are drawn at changes: the canvas keeps its resolution and so does
+	// every stroke, which is stored in canvas space.
+	private refitWidth(): void {
+		const available = this.availablePageWidth();
+		if (available <= 0) return;
+
+		// Remember how far through the current page the top of the view is,
+		// so the same spot is on screen once everything has resized.
+		const anchor = this.placeholderFor(this.currentPageNumber);
+		const paneTop = this.contentEl.getBoundingClientRect().top;
+		let progress = 0;
+		if (anchor) {
+			const rect = anchor.getBoundingClientRect();
+			progress = (paneTop - rect.top) / (rect.height || 1);
+		}
+
+		for (const [pageNumber, usedWidth] of this.layoutWidths) {
+			const scale = this.layoutScales.get(pageNumber);
+			if (scale === undefined || usedWidth <= 0 || Math.abs(usedWidth - available) < 0.5) continue;
+			const ratio = available / usedWidth;
+			this.layoutScales.set(pageNumber, scale * ratio);
+			this.layoutWidths.set(pageNumber, available);
+
+			const placeholder = this.placeholderFor(pageNumber);
+			const width = parseFloat(placeholder?.style.getPropertyValue('--inkling-page-width') ?? '');
+			// The aspect ratio is untouched: width and height scale together.
+			if (placeholder && Number.isFinite(width)) placeholder.setCssProps({ '--inkling-page-width': `${width * ratio}px` });
+			// A page drawn larger than before would otherwise be a blown-up
+			// copy of its old raster; this is the same sharpening a pinch
+			// zoom asks for.
+			if (ratio > 1.15 && this.renderedPages.has(pageNumber)) void this.upgradeResolution(pageNumber, ratio);
+		}
+
+		if (anchor) {
+			const rect = anchor.getBoundingClientRect();
+			this.contentEl.scrollTop += rect.top + progress * rect.height - paneTop;
+		}
+	}
+
+	// The view zoom at which `placeholder`'s whole page fits the pane's
+	// height, never above fit-to-width (the view only ever shrinks). The
+	// page's height at fit-to-width is its height now divided by the zoom
+	// it is at now, so this works from any starting zoom. The hold puts the
+	// page's top edge at the top of the pane.
+	private fitPage(placeholder: HTMLElement): { zoom: number; hold: ViewZoomHold } {
+		const style = window.getComputedStyle(this.contentEl);
+		const paddingTop = parseFloat(style.paddingTop) || 0;
+		const paddingBottom = parseFloat(style.paddingBottom) || 0;
+		const paneHeight = Math.max(this.contentEl.clientHeight - paddingTop - paddingBottom, 1);
+		const rect = placeholder.getBoundingClientRect();
+		const heightAtFitWidth = rect.height / this.viewZoomApplied;
+		const zoom = Math.min(1, Math.max(MIN_VIEW_ZOOM, paneHeight / (heightAtFitWidth || 1)));
+		const paneTop = this.contentEl.getBoundingClientRect().top;
+		return { zoom, hold: { placeholder, fx: 0, fy: 0, screen: { x: rect.left, y: paneTop + paddingTop } } };
+	}
+
+	private placeholderFor(pageNumber: number): HTMLElement | null {
+		return this.contentEl.querySelector<HTMLElement>(`.inkling-pdf-page-placeholder[data-page-number="${pageNumber}"]`);
 	}
 
 	private teardown() {
@@ -874,6 +948,7 @@ export class PdfAnnotateView extends FileView {
 		this.renderedScales.clear();
 		this.baseScales.clear();
 		this.layoutScales.clear();
+		this.layoutWidths.clear();
 		this.upgradingPages.clear();
 		this.textLines.clear();
 		this.pendingScrollToPage = null;
@@ -1142,8 +1217,10 @@ export class PdfAnnotateView extends FileView {
 		const existing = this.layoutScales.get(pageNumber);
 		if (existing !== undefined) return existing;
 
-		const scale = layoutRenderScale(this.availablePageWidth(), pagePointWidth);
+		const available = this.availablePageWidth();
+		const scale = layoutRenderScale(available, pagePointWidth);
 		this.layoutScales.set(pageNumber, scale);
+		this.layoutWidths.set(pageNumber, available);
 		return scale;
 	}
 

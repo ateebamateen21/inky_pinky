@@ -48,4 +48,34 @@ describe('stepLadder', () => {
 		expect(stepLadder(1, 1, 2, pageOnly)).toEqual({ view: 1, page: 2 });
 		expect(stepLadder(1, 2, 0.25, pageOnly)).toEqual({ view: 1, page: 1 });
 	});
+
+	it('with the view locked, a pinch out goes straight to magnifying the page', () => {
+		const result = stepLadder(0.5, 1, 2, { ...limits, freezeView: true });
+		expect(result).toEqual({ view: 0.5, page: 2 });
+	});
+
+	it('with the view locked, zooming out only brings the page back to 1x', () => {
+		expect(stepLadder(0.5, 2, 0.1, { ...limits, freezeView: true })).toEqual({ view: 0.5, page: 1 });
+	});
+
+	it('with the page locked, zooming in stops at fit-to-width', () => {
+		expect(stepLadder(0.5, 2, 5, { ...limits, freezePage: true })).toEqual({ view: 1, page: 2 });
+	});
+
+	it('with the page locked, zooming out goes straight to the view', () => {
+		const result = stepLadder(1, 2, 0.5, { ...limits, freezePage: true });
+		expect(result).toEqual({ view: 0.5, page: 2 });
+	});
+
+	it('with both locked, nothing moves', () => {
+		const both = { ...limits, freezeView: true, freezePage: true };
+		expect(stepLadder(0.6, 2, 3, both)).toEqual({ view: 0.6, page: 2 });
+		expect(stepLadder(0.6, 2, 0.2, both)).toEqual({ view: 0.6, page: 2 });
+	});
+
+	it('lands exactly on 1 rather than a hair off it', () => {
+		// 0.7 * (1 / 0.7) is not exactly 1 in floating point.
+		const result = stepLadder(0.7, 1, 1 / 0.7, limits);
+		expect(result).toEqual({ view: 1, page: 1 });
+	});
 });

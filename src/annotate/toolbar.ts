@@ -62,6 +62,29 @@ function el<K extends keyof HTMLElementTagNameMap>(
 // keys instead of a tool strip. Themes style `clickable-icon` flat and
 // muted, and adjust it for their own metrics — much better than fighting
 // each one with overrides here.
+// Shows a lock button as locked or unlocked: the icon, the tooltip (which
+// names what pressing it will do next), and the highlight the stylesheet
+// already gives an active tool. Redrawn only when the state actually
+// changes, since this runs on every toolbar refresh.
+function showLock(
+	button: HTMLButtonElement,
+	locked: boolean,
+	what: string,
+	unlockedIcon: string,
+	lockedIcon: string,
+	unlockedFallback: string,
+	lockedFallback: string,
+): void {
+	if (button.classList.contains('is-active') === locked && button.dataset.lockDrawn === '1') return;
+	button.dataset.lockDrawn = '1';
+	button.classList.toggle('is-active', locked);
+	button.setAttribute('aria-pressed', String(locked));
+	const title = `${locked ? 'Unlock' : 'Lock'} ${what}`;
+	setTooltip(button, title);
+	button.setAttribute('aria-label', title);
+	setIconOrText(button, locked ? lockedIcon : unlockedIcon, locked ? lockedFallback : unlockedFallback);
+}
+
 function iconButton(className: string, spec: ButtonSpec, onClick: () => void): HTMLButtonElement {
 	const button = el('button', `clickable-icon ${className}`);
 	button.type = 'button';
@@ -286,7 +309,34 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 	setTooltip(zoomLabel, 'Reset zoom');
 	zoomLabel.setAttribute('aria-label', 'Reset zoom');
 	zoomLabel.addEventListener('click', () => controller.resetZoom());
-	statusGroup.append(pageBox, pageLabel, zoomOutButton, zoomLabel, zoomInButton);
+	// Fit buttons are one-off actions, so they stay available while a zoom
+	// is locked: pressing one is deliberate, which a stray pinch is not.
+	const fitWidthButton = iconButton('inkling-tool-button', { icon: 'move-horizontal', fallback: '↔', title: 'Fit to width' }, () =>
+		controller.fitWidth(),
+	);
+	const fitPageButton = iconButton('inkling-tool-button', { icon: 'maximize', fallback: '⛶', title: 'Fit whole page' }, () =>
+		controller.fitPage(),
+	);
+	// Two locks, because the two zooms are separate things a reader may
+	// want to settle independently: keep the page layout and still
+	// magnify, or keep a magnified page and still shrink the view.
+	const viewLockButton = iconButton('inkling-tool-button', { icon: 'unlock', fallback: '🔓', title: 'Lock view zoom' }, () =>
+		controller.toggleViewZoomLock(),
+	);
+	const pageLockButton = iconButton('inkling-tool-button', { icon: 'file', fallback: '📄', title: 'Lock page zoom' }, () =>
+		controller.togglePageZoomLock(),
+	);
+	statusGroup.append(
+		pageBox,
+		pageLabel,
+		zoomOutButton,
+		zoomLabel,
+		zoomInButton,
+		fitWidthButton,
+		fitPageButton,
+		viewLockButton,
+		pageLockButton,
+	);
 
 	// Collapses the strip to the active tool, undo, and this button. On a
 	// phone in portrait the full row is a real slice of the screen, and
@@ -370,6 +420,15 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		zoomOutButton.disabled = !magnified && !viewRoom;
 		zoomInButton.disabled = pageZoom >= MAX_ZOOM;
 		zoomLabel.setText(`${Math.round((magnified ? pageZoom : viewZoom) * 100)}%`);
+
+		// Shrinking the view is a PDF-view feature; an ink block can only
+		// magnify a page, so it gets the page lock and nothing else here.
+		const canZoomView = controller.supportsViewZoom();
+		fitWidthButton.hidden = !canZoomView;
+		fitPageButton.hidden = !canZoomView;
+		viewLockButton.hidden = !canZoomView;
+		showLock(viewLockButton, controller.isViewZoomLocked(), 'view zoom', 'unlock', 'lock', '🔓', '🔒');
+		showLock(pageLockButton, controller.isPageZoomLocked(), 'page zoom', 'file', 'file-lock', '📄', '🔒');
 
 		// Hidden for a single-page surface (every Markdown ink block, and a
 		// one-page note), where "1 / 1" says nothing anyone needed to know.
