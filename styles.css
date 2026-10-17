@@ -16,7 +16,10 @@
 	display: flex;
 	flex-direction: column;
 	align-items: center;
-	gap: var(--size-4-3);
+	/* Shrinks with the pages when the whole view is zoomed out, like the
+	   native PDF viewer's. --inkling-view-zoom is 1 (unset) at fit-to-width
+	   and only ever smaller; pinching inside one page never touches it. */
+	gap: calc(var(--size-4-3) * var(--inkling-view-zoom, 1));
 	padding: 0 var(--size-4-3) var(--size-4-6);
 	overflow: auto;
 	background-color: var(--background-secondary);
@@ -24,12 +27,12 @@
 
 .inkling-pdf-page-placeholder {
 	position: relative;
-	max-width: 100%;
+	max-width: calc(100% * var(--inkling-view-zoom, 1));
 	/* Both fed from src/pdfView.ts, which knows each page's real size from
 	   pdf.js. Height comes from the ratio rather than being set directly, so
 	   a page narrower than its natural width scales down whole instead of
 	   being squashed. */
-	width: var(--inkling-page-width);
+	width: calc(var(--inkling-page-width) * var(--inkling-view-zoom, 1));
 	aspect-ratio: var(--inkling-page-aspect);
 	/* The parent is a flex column, so these shrink by default — and since a
 	   placeholder is an empty div until its page renders, `min-height: auto`
