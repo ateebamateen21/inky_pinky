@@ -1131,24 +1131,34 @@ export class AnnotationController {
 		this.notify();
 	}
 
+	// The one place raw pen samples become the points a stroke is drawn and
+	// stored from. Both the live draft (draftFor) and the committed stroke
+	// (strokeFromDraft) call this, so the ink you see while writing is built
+	// from exactly the same points as the ink that is kept once the pen lifts.
+	// Before, only the commit did this, so the draft was drawn from the raw
+	// samples — still carrying pressure even with the pressure setting off —
+	// and visibly changed shape the moment the pen lifted.
+	//
+	// Thinned so that what you see the instant you lift the pen is what is
+	// stored. A save lands about a second after the pen lifts and re-renders
+	// the block from what it wrote — so simplifying there would visibly
+	// change the ink after the fact, which is exactly the bug that made a
+	// tapered stroke redraw itself flat (see the pressure note in
+	// src/markdown/inkBlockFormat.ts).
+	//
+	// Pressure is stripped rather than never captured, so the setting
+	// governs one place instead of being checked in the pointer layer, the
+	// renderer, and the serializer.
+	private strokePoints(raw: Point[]): Point[] {
+		const simplified = simplifyPoints(raw, SIMPLIFY_EPSILON);
+		const keepPressure = this.options.isPressureEnabled?.() ?? true;
+		return keepPressure ? simplified : simplified.map(({ x, y }) => ({ x, y }));
+	}
+
 	private strokeFromDraft(pageNumber: number, mode: { tool: DrawToolType; points: Point[] }): StrokeAnnotation {
-		// Thinned here, at the moment the stroke commits, rather than when it
-		// is written to the file. A save lands about a second after the pen
-		// lifts and re-renders the block from what it wrote — so simplifying
-		// there would visibly change the ink after the fact, which is exactly
-		// the bug that made a tapered stroke redraw itself flat (see the
-		// pressure note in src/markdown/inkBlockFormat.ts). Doing it on commit
-		// means what you see the instant you lift the pen is what is stored.
-		//
 		// After shape recognition and highlighter snapping above, both of
 		// which read the full sample set and are better for it.
-		const simplified = simplifyPoints(mode.points, SIMPLIFY_EPSILON);
-
-		// Pressure is stripped rather than never captured, so the setting
-		// governs one place — what gets committed — instead of being
-		// checked in the pointer layer, the renderer, and the serializer.
-		const keepPressure = this.options.isPressureEnabled?.() ?? true;
-		const points = keepPressure ? simplified : simplified.map(({ x, y }) => ({ x, y }));
+		const points = this.strokePoints(mode.points);
 		return { id: createId(), kind: 'stroke', tool: mode.tool, color: this.getColor(), width: this.inkWidth(pageNumber), points };
 	}
 
@@ -1313,7 +1323,16 @@ export class AnnotationController {
 
 	private draftFor(pageNumber: number, mode: DragMode | null): Annotation | null {
 		if (!mode) return null;
-		if (mode.kind === 'draw') return { id: DRAFT_ID, kind: 'stroke', tool: mode.tool, color: this.getColor(), width: this.inkWidth(pageNumber), points: mode.points };
+		if (mode.kind === 'draw') {
+			return {
+				id: DRAFT_ID,
+				kind: 'stroke',
+				tool: mode.tool,
+				color: this.getColor(),
+				width: this.inkWidth(pageNumber),
+				points: this.strokePoints(mode.points),
+			};
+		}
 		if (mode.kind === 'shape') {
 			return {
 				id: DRAFT_ID,
