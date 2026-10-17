@@ -3,6 +3,7 @@ import type { TemplateStyle } from '../templates';
 import { setIconOrText } from '../icon';
 import { AnnotationController } from './controller';
 import { MAX_ZOOM } from './pointer';
+import { MIN_VIEW_ZOOM } from './zoomLadder';
 import { MAX_WIDTH, MIN_WIDTH, ToolType, paletteFor } from './types';
 
 // One press of the toolbar's zoom buttons. A ratio rather than a step, for
@@ -356,14 +357,19 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 			'--inkling-dot-color': activeColor,
 		});
 
-		const zoom = controller.getZoom();
-		// Only meaningful once a page is actually zoomed — a permanent
+		const pageZoom = controller.getZoom();
+		const viewZoom = controller.getViewZoom();
+		const magnified = pageZoom > 1;
+		const shrunk = viewZoom < 1;
+		// Only meaningful once something is actually zoomed — a permanent
 		// "100%" is clutter. The buttons stay, since they are how a mouse
-		// gets to a zoom in the first place.
-		zoomLabel.hidden = zoom <= 1;
-		zoomOutButton.disabled = zoom <= 1;
-		zoomInButton.disabled = zoom >= MAX_ZOOM;
-		zoomLabel.setText(`${Math.round(zoom * 100)}%`);
+		// gets to a zoom in the first place. It shows the page's zoom while
+		// a page is magnified, otherwise how far the whole view is shrunk.
+		zoomLabel.hidden = !magnified && !shrunk;
+		const viewRoom = controller.supportsViewZoom() && viewZoom > MIN_VIEW_ZOOM;
+		zoomOutButton.disabled = !magnified && !viewRoom;
+		zoomInButton.disabled = pageZoom >= MAX_ZOOM;
+		zoomLabel.setText(`${Math.round((magnified ? pageZoom : viewZoom) * 100)}%`);
 
 		// Hidden for a single-page surface (every Markdown ink block, and a
 		// one-page note), where "1 / 1" says nothing anyone needed to know.

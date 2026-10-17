@@ -3,6 +3,7 @@ import { AnnotationMode, getDocument, RenderingCancelledException, type PageView
 import { PDFDocument } from 'pdf-lib';
 import { AnnotationController, buildToolbar, paletteFor, ToolState, type Annotation, type Point, type ToolType } from './annotate';
 import { createId } from './annotate/id';
+import type { ViewZoomHold } from './annotate/pointer';
 import { AnnotationWriterClient } from './pdf/annotationWriterClient';
 import { toArrayBuffer } from './binary';
 import { appendBinarySafely, canAppendBinary, writeBinarySafely } from './vaultWrite';
@@ -405,6 +406,7 @@ export class PdfAnnotateView extends FileView {
 			getCurrentPage: () => this.currentPageNumber,
 			onAnnotationsChanged: (pageNumber) => this.markPageDirty(pageNumber),
 			onZoomSettled: (pageNumber, scale) => void this.upgradeResolution(pageNumber, scale),
+			setViewZoom: (zoom, hold) => this.setViewZoom(zoom, hold),
 			// Relative to the page's first render, so an unzoomed page draws
 			// exactly as it always has, and a page upgradeResolution has
 			// since re-backed denser draws the same width in PDF space rather
@@ -834,7 +836,26 @@ export class PdfAnnotateView extends FileView {
 		this.controller.destroy();
 	}
 
+	// Whole-view zoom: every page and the gaps between them scale together
+	// (styles.css reads the one variable below). Only shrinking is offered —
+	// 1 is fit-to-width — so pages never outgrow the view and nothing here
+	// has to re-render; the existing sharp canvases are simply drawn smaller.
+	//
+	// `hold` is the point the reader is looking at: the given fraction of
+	// one page's box has to end up under `hold.screen`. Measured on that
+	// page after the resize rather than by scaling the scroll position, so
+	// it stays exact however many gaps lie above it.
+	private setViewZoom(zoom: number, hold?: ViewZoomHold): void {
+		this.contentEl.setCssProps({ '--inkling-view-zoom': String(zoom) });
+		if (!hold) return;
+		const rect = hold.placeholder.getBoundingClientRect();
+		this.contentEl.scrollTop += rect.top + hold.fy * rect.height - hold.screen.y;
+		this.scheduleCurrentPageUpdate();
+	}
+
 	private teardown() {
+		// A new file starts at fit-to-width, not at the last file's shrink.
+		this.controller.applyViewZoom(1);
 		this.observer?.disconnect();
 		this.observer = null;
 		this.renderedPages.clear();

@@ -1,4 +1,5 @@
 import { Point } from './types';
+import { MIN_VIEW_ZOOM, stepLadder } from './zoomLadder';
 
 export interface GestureHandlers {
 	onStart(point: Point, event: PointerEvent): void;
@@ -21,6 +22,24 @@ export interface GestureHandlers {
 	// matching resolution so it — and the ink on it — stay sharp instead of
 	// just being a blown-up copy of the original lower-resolution render.
 	onZoomEnd?(scale: number): void;
+	// Whole-view zoom (see zoomLadder.ts), offered only by hosts that have
+	// one — the PDF view. A surface without it (a Markdown ink block)
+	// leaves both out, and every zoom then moves the page alone, exactly
+	// as before. `getViewZoom` is 1 when pages fit the width of the view.
+	getViewZoom?(): number;
+	setViewZoom?(zoom: number, hold: ViewZoomHold): void;
+}
+
+// What a view-level zoom has to keep still: the point `fx`/`fy` of the way
+// across/down `placeholder` (a fraction of that page's box, so it stays
+// meaningful while the box changes size) must end up under `screen`.
+// Holding one page's point is exact however many fixed-size gaps sit above
+// it, which scaling the scroll position by a ratio would not be.
+export interface ViewZoomHold {
+	placeholder: HTMLElement;
+	fx: number;
+	fy: number;
+	screen: Point;
 }
 
 // A real stylus tip's contact patch is a couple of CSS pixels at most; a
@@ -210,6 +229,20 @@ export function currentZoom(content: HTMLElement): number {
 	return getZoom(content).scale;
 }
 
+// A magnified page's pan offset is in pixels of its box. When a view zoom
+// resizes the box, the offset has to scale with it, or the page would jump
+// and could end up showing blank space past its edge. A page that is not
+// magnified has no offset to fix, so most pages cost nothing here.
+export function rescaleZoomTranslate(content: HTMLElement, ratio: number): void {
+	const zoom = getZoom(content);
+	if (zoom.scale <= MIN_ZOOM) return;
+	const placeholder = content.parentElement;
+	if (!placeholder) return;
+	const rect = placeholder.getBoundingClientRect();
+	const translate = clampTranslate(zoom.x * ratio, zoom.y * ratio, zoom.scale, rect.width, rect.height);
+	applyZoom(content, { scale: zoom.scale, x: translate.x, y: translate.y });
+}
+
 // How hard a wheel notch zooms. Exponential rather than additive so the
 // same gesture covers the same proportion of the range wherever it starts
 // — additive steps crawl when zoomed in and lurch when zoomed out.
@@ -249,7 +282,25 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 	// always has both points available to compute a starting pinch distance
 	// and midpoint from.
 	const touches = new Map<number, Point>();
-	let pinch: { ids: [number, number]; startDistance: number; startScale: number; anchor: Point; content: HTMLElement; placeholder: HTMLElement } | null = null;
+	let pinch: {
+		ids: [number, number];
+		startDistance: number;
+		startScale: number;
+		// Where the whole-view zoom stood when the pinch began; every frame
+		// is worked out from here, not from the previous frame.
+		startView: number;
+		// The page point under the fingers, as a fraction of the page's box
+		// rather than pixels, because a view zoom changes the box's size
+		// partway through a gesture.
+		anchor: Point;
+		// Where the fingers started, as a fraction of the page's box — what
+		// a view zoom holds still.
+		hold: Point;
+		lastMidY: number;
+		scrollParent: HTMLElement | null;
+		content: HTMLElement;
+		placeholder: HTMLElement;
+	} | null = null;
 
 	// event.clientX/Y are in CSS pixels relative to the canvas's rendered
 	// (possibly shrunk-to-fit, e.g. by the page placeholder's max-width:
@@ -337,11 +388,24 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		// under the fingers' midpoint — held fixed on screen for the rest of
 		// the gesture by solving the same transform for translate on every
 		// subsequent move below.
+		const width = rect.width || 1;
+		const height = rect.height || 1;
 		const anchor: Point = {
-			x: (mid.x - rect.left - zoom.x) / zoom.scale,
-			y: (mid.y - rect.top - zoom.y) / zoom.scale,
+			x: (mid.x - rect.left - zoom.x) / zoom.scale / width,
+			y: (mid.y - rect.top - zoom.y) / zoom.scale / height,
 		};
-		pinch = { ids, startDistance: distance(p1, p2), startScale: zoom.scale, anchor, content, placeholder };
+		pinch = {
+			ids,
+			startDistance: distance(p1, p2),
+			startScale: zoom.scale,
+			startView: getHandlers()?.getViewZoom?.() ?? 1,
+			anchor,
+			hold: { x: (mid.x - rect.left) / width, y: (mid.y - rect.top) / height },
+			lastMidY: mid.y,
+			scrollParent: findScrollParent(el),
+			content,
+			placeholder,
+		};
 	};
 
 	const onPointerDown = (event: PointerEvent) => {
@@ -386,18 +450,40 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 			const p1 = touches.get(pinch.ids[0]);
 			const p2 = touches.get(pinch.ids[1]);
 			if (p1 && p2) {
-				const rect = pinch.placeholder.getBoundingClientRect();
+				const handlers = getHandlers();
 				const mid = midpoint(p1, p2);
-				const scale = clamp((distance(p1, p2) / pinch.startDistance) * pinch.startScale, MIN_ZOOM, MAX_ZOOM);
+				const canZoomView = handlers?.setViewZoom !== undefined;
+				const next = stepLadder(pinch.startView, pinch.startScale, distance(p1, p2) / pinch.startDistance, {
+					minView: canZoomView ? MIN_VIEW_ZOOM : 1,
+					maxPage: MAX_ZOOM,
+				});
+
+				// The view rung first: resizing the pages changes the box the
+				// page rung is measured against, so it has to land before it.
+				let viewMoved = false;
+				if (handlers?.setViewZoom && next.view !== (handlers.getViewZoom?.() ?? 1)) {
+					handlers.setViewZoom(next.view, { placeholder: pinch.placeholder, fx: pinch.hold.x, fy: pinch.hold.y, screen: mid });
+					viewMoved = true;
+				}
+
+				const rect = pinch.placeholder.getBoundingClientRect();
 				const translate = clampTranslate(
-					mid.x - rect.left - pinch.anchor.x * scale,
-					mid.y - rect.top - pinch.anchor.y * scale,
-					scale,
+					mid.x - rect.left - pinch.anchor.x * rect.width * next.page,
+					mid.y - rect.top - pinch.anchor.y * rect.height * next.page,
+					next.page,
 					rect.width,
 					rect.height,
 				);
-				applyZoom(pinch.content, { scale, x: translate.x, y: translate.y });
-				getHandlers()?.onZoomChange?.(scale);
+				applyZoom(pinch.content, { scale: next.page, x: translate.x, y: translate.y });
+
+				// Two fingers dragged without a page magnified have nothing to
+				// pan inside the page, so the drag scrolls the list instead.
+				// (A view zoom already moves the scroll to hold its point.)
+				if (!viewMoved && next.page <= MIN_ZOOM && pinch.scrollParent) {
+					pinch.scrollParent.scrollTop += pinch.lastMidY - mid.y;
+				}
+				pinch.lastMidY = mid.y;
+				handlers?.onZoomChange?.(next.page);
 			}
 			event.preventDefault();
 			return;
@@ -489,8 +575,24 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		event.preventDefault();
 
 		const factor = Math.exp(-event.deltaY * WHEEL_ZOOM_SENSITIVITY);
-		const scale = zoomAbout(content, placeholder, currentZoom(content) * factor, { x: event.clientX, y: event.clientY });
-		getHandlers()?.onZoomChange?.(scale);
+		const handlers = getHandlers();
+		const screen: Point = { x: event.clientX, y: event.clientY };
+		const startView = handlers?.getViewZoom?.() ?? 1;
+		const next = stepLadder(startView, currentZoom(content), factor, {
+			minView: handlers?.setViewZoom ? MIN_VIEW_ZOOM : 1,
+			maxPage: MAX_ZOOM,
+		});
+		if (handlers?.setViewZoom && next.view !== startView) {
+			const rect = placeholder.getBoundingClientRect();
+			handlers.setViewZoom(next.view, {
+				placeholder,
+				fx: (screen.x - rect.left) / (rect.width || 1),
+				fy: (screen.y - rect.top) / (rect.height || 1),
+				screen,
+			});
+		}
+		const scale = zoomAbout(content, placeholder, next.page, screen);
+		handlers?.onZoomChange?.(scale);
 
 		if (wheelSettleHandle !== null) window.clearTimeout(wheelSettleHandle);
 		wheelSettleHandle = window.setTimeout(() => {

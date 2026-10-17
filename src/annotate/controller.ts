@@ -13,7 +13,17 @@ import {
 	unionBoundingBox,
 } from './geometry';
 import { createId } from './id';
-import { attachPointerGestures, currentZoom, GestureHandlers, zoomAbout } from './pointer';
+import {
+	attachPointerGestures,
+	currentZoom,
+	findScrollParent,
+	GestureHandlers,
+	rescaleZoomTranslate,
+	MAX_ZOOM,
+	ViewZoomHold,
+	zoomAbout,
+} from './pointer';
+import { MIN_VIEW_ZOOM, stepLadder } from './zoomLadder';
 import { recognizeShape } from './recognize';
 import { SIMPLIFY_EPSILON, simplifyPoints } from './simplify';
 import { handleRects, isHighlight, renderBase, renderHighlights, renderOverlay } from './render';
@@ -151,6 +161,11 @@ export interface AnnotationControllerOptions {
 	// render is now too low-resolution to look sharp at this zoom level and,
 	// if so, re-render it (see its upgradeResolution).
 	onZoomSettled?: (pageNumber: number, scale: number) => void;
+	// Applies a whole-view zoom (every page shrinking together, 1 = fit to
+	// width) and keeps `hold`, when given, still on screen. Only a host
+	// that lays pages out in a scrolling list — the PDF view — can do this;
+	// omitted, there is no view zoom and every zoom moves a page alone.
+	setViewZoom?: (zoom: number, hold?: ViewZoomHold) => void;
 	// Canvas pixels per unit of pen width on a page, asked each time ink is
 	// made. Omitted, a unit is one pixel. A host that re-backs a page at a
 	// different resolution — the PDF view does, whenever a zoom sharpens one
@@ -233,6 +248,10 @@ export class AnnotationController {
 	// currently considers "current" (getCurrentPage), which in practice is
 	// whichever page the user is actually looking at/touching.
 	private readonly zoomByPage = new Map<number, number>();
+	// The whole-view zoom (see zoomLadder.ts): 1 when pages fit the width of
+	// the view, smaller when they have been shrunk together. Shared by every
+	// page, unlike the pinch-zoom above, which each page keeps for itself.
+	private viewZoom = 1;
 	// Coalesced pointer samples arrive several per animation frame (see
 	// annotate/pointer.ts) and each one used to repaint the overlay. The
 	// picture can only change once a frame, so the extra repaints were pure
@@ -521,15 +540,74 @@ export class AnnotationController {
 		return this.getPageZoom(pageNumber);
 	}
 
-	// Zooms the current page by a factor, about its centre — a toolbar or
-	// keyboard zoom has no cursor to aim at, and the middle of the page is
-	// what the reader is looking at.
-	zoomBy(factor: number): void {
-		this.zoomCurrentPage((scale) => scale * factor);
+	// The whole-view zoom (1 = fit to width); see zoomLadder.ts.
+	getViewZoom(): number {
+		return this.viewZoom;
 	}
 
+	// Whether this surface can shrink its pages at all.
+	supportsViewZoom(): boolean {
+		return this.options.setViewZoom !== undefined;
+	}
+
+	// Sets the whole-view zoom and tells every magnified page to rescale its
+	// pan offset to match the resized pages. `hold`, when given, is what the
+	// host keeps still on screen; without it (a reset) the host just applies
+	// the number.
+	applyViewZoom(zoom: number, hold?: ViewZoomHold): void {
+		const host = this.options.setViewZoom;
+		if (!host) return;
+		const next = Math.min(1, Math.max(MIN_VIEW_ZOOM, zoom));
+		if (next === this.viewZoom) return;
+		const ratio = next / this.viewZoom;
+		this.viewZoom = next;
+		host(next, hold);
+		for (const mount of this.pages.values()) rescaleZoomTranslate(mount.content, ratio);
+		this.notify();
+	}
+
+	// Zooms by a factor along the ladder (see zoomLadder.ts): the whole view
+	// first while pages are smaller than fit-to-width, then the current page.
+	zoomBy(factor: number): void {
+		const target = this.currentPageTarget();
+		if (!target) return;
+		const page = currentZoom(target.mount.content);
+		const next = stepLadder(this.viewZoom, page, factor, {
+			minView: this.supportsViewZoom() ? MIN_VIEW_ZOOM : 1,
+			maxPage: MAX_ZOOM,
+		});
+		if (next.view !== this.viewZoom) this.applyViewZoom(next.view, this.viewportHold(target.mount, target.placeholder));
+		if (next.page !== page) this.zoomCurrentPage(() => next.page);
+	}
+
+	// Back to normal in two presses: a magnified page returns to 1x first,
+	// then pages that were shrunk return to fit-to-width.
 	resetZoom(): void {
-		this.zoomCurrentPage(() => 1);
+		const target = this.currentPageTarget();
+		if (target && currentZoom(target.mount.content) > 1) {
+			this.zoomCurrentPage(() => 1);
+			return;
+		}
+		if (target && this.viewZoom < 1) this.applyViewZoom(1, this.viewportHold(target.mount, target.placeholder));
+	}
+
+	private currentPageTarget(): { mount: PageMount; placeholder: HTMLElement } | null {
+		const pageNumber = this.options.getCurrentPage?.();
+		if (pageNumber == null) return null;
+		const mount = this.pages.get(pageNumber);
+		const placeholder = mount?.content.parentElement;
+		if (!mount || !placeholder) return null;
+		return { mount, placeholder };
+	}
+
+	// A toolbar or keyboard view zoom has no fingers to aim at, so it holds
+	// the point at the middle of what the reader can see — measured on the
+	// scrolling container when it has one, otherwise on the page itself.
+	private viewportHold(mount: PageMount, placeholder: HTMLElement): ViewZoomHold {
+		const viewport = (findScrollParent(mount.content) ?? placeholder).getBoundingClientRect();
+		const screen = { x: viewport.left + viewport.width / 2, y: viewport.top + viewport.height / 2 };
+		const rect = placeholder.getBoundingClientRect();
+		return { placeholder, fx: (screen.x - rect.left) / (rect.width || 1), fy: (screen.y - rect.top) / (rect.height || 1), screen };
 	}
 
 	private zoomCurrentPage(next: (scale: number) => number): void {
@@ -678,6 +756,13 @@ export class AnnotationController {
 				this.notify();
 			},
 			onZoomEnd: (scale) => this.options.onZoomSettled?.(pageNumber, scale),
+			// Offered only when the host can actually shrink its pages.
+			...(this.options.setViewZoom
+				? {
+						getViewZoom: () => this.viewZoom,
+						setViewZoom: (zoom: number, hold: ViewZoomHold) => this.applyViewZoom(zoom, hold),
+					}
+				: {}),
 		};
 	}
 
