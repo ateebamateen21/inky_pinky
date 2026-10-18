@@ -91,10 +91,31 @@ describe('strokes are thinned when they commit', () => {
 		const points: Array<[number, number]> = [];
 		for (let i = 0; i <= 60; i++) points.push([100 + i * 5, 200]);
 
-		surface.drawStroke(points);
+		// A mouse reports no pressure, so there is nothing for thinning to
+		// flatten.
+		surface.drawStroke(points, { pressure: 0, pointerType: 'mouse' });
 		const kept = pointsOf(surface.annotations()[0]);
 		expect(kept.length).toBeGreaterThanOrEqual(2);
 		expect(kept.length).toBeLessThan(points.length / 4);
+	});
+
+	it('drops them from a pen stroke when pressure is switched off', () => {
+		surface = mountTestSurface(800, 450, { isPressureEnabled: () => false });
+		const points: Array<[number, number]> = [];
+		for (let i = 0; i <= 60; i++) points.push([100 + i * 5, 200]);
+
+		surface.drawStroke(points);
+		const kept = pointsOf(surface.annotations()[0]);
+		expect(kept.length).toBeLessThan(points.length / 4);
+		expect(kept.every((p) => p.p === undefined)).toBe(true);
+	});
+
+	it('keeps every sample of a stroke that carries pressure', () => {
+		const points: Array<[number, number]> = [];
+		for (let i = 0; i <= 60; i++) points.push([100 + i * 5, 200]);
+
+		surface.drawStroke(points, { pressure: 0.5 });
+		expect(pointsOf(surface.annotations()[0]).length).toBeGreaterThanOrEqual(points.length);
 	});
 
 	it('keeps the shape of a stroke that actually turns', () => {
@@ -202,5 +223,40 @@ describe('a selection stays on the surface', () => {
 
 		const xs = pointsOf(surface.annotations()[0]).map((p) => p.x);
 		expect(Math.min(...xs)).toBeCloseTo(150, 0);
+	});
+});
+
+describe('the start of a stroke', () => {
+	// Some browser and pen pairings report pointerdown at the previous hover
+	// position, then deliver the real contact sample with the same timestamp.
+	it('starts from the contact sample when pointerdown is stale', () => {
+		surface.pointer('pointerdown', 100, 100, { timeStamp: 5000 });
+		surface.pointer('pointermove', 110, 105, { timeStamp: 5000 });
+		surface.pointer('pointermove', 120, 110, { timeStamp: 5010 });
+		surface.pointer('pointerup', 120, 110, { timeStamp: 5020 });
+
+		const points = pointsOf(surface.annotations()[0]);
+		expect(points[0]).toMatchObject({ x: 110, y: 105 });
+		expect(points.some((p) => p.x === 100 && p.y === 100)).toBe(false);
+	});
+
+	it('keeps the pointerdown position when the first move comes later', () => {
+		surface.pointer('pointerdown', 100, 100, { timeStamp: 5000 });
+		surface.pointer('pointermove', 110, 105, { timeStamp: 5008 });
+		surface.pointer('pointerup', 110, 105, { timeStamp: 5016 });
+
+		const points = pointsOf(surface.annotations()[0]);
+		expect(points[0]).toMatchObject({ x: 100, y: 100 });
+	});
+
+	it('replaces the starting point only once', () => {
+		surface.pointer('pointerdown', 100, 100, { timeStamp: 5000 });
+		surface.pointer('pointermove', 110, 105, { timeStamp: 5000 });
+		surface.pointer('pointermove', 120, 110, { timeStamp: 5000 });
+		surface.pointer('pointerup', 120, 110, { timeStamp: 5020 });
+
+		const points = pointsOf(surface.annotations()[0]);
+		expect(points[0]).toMatchObject({ x: 110, y: 105 });
+		expect(points.some((p) => p.x === 120 && p.y === 110)).toBe(true);
 	});
 });
