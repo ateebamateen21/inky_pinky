@@ -26,6 +26,7 @@ import {
 import { MIN_VIEW_ZOOM, stepLadder } from './zoomLadder';
 import { recognizeShape } from './recognize';
 import { SIMPLIFY_EPSILON, simplifyPoints } from './simplify';
+import { hasPressure } from './stroke';
 import { handleRects, isHighlight, renderBase, renderHighlights, renderOverlay } from './render';
 import { AnnotationStore } from './store';
 import { HistoryStack } from './history';
@@ -68,7 +69,7 @@ const HOLD_STILLNESS_PX = 2.5;
 type HandleName = 'nw' | 'ne' | 'sw' | 'se';
 
 type DragMode =
-	| { kind: 'draw'; tool: DrawToolType; points: Point[]; lastMovedAt: number }
+	| { kind: 'draw'; tool: DrawToolType; points: Point[]; lastMovedAt: number; startStamp: number | null }
 	| { kind: 'shape'; tool: ShapeToolType; start: Point; end: Point }
 	| { kind: 'erase'; before: Annotation[] }
 	| { kind: 'lasso'; points: Point[] }
@@ -825,8 +826,8 @@ export class AnnotationController {
 
 	private getHandlersFor(pageNumber: number): GestureHandlers {
 		return {
-			onStart: (point) => this.handleStart(pageNumber, point),
-			onMove: (point) => this.handleMove(pageNumber, point),
+			onStart: (point, event) => this.handleStart(pageNumber, point, event.timeStamp),
+			onMove: (point, event) => this.handleMove(pageNumber, point, event.timeStamp),
 			onEnd: (point) => this.handleEnd(pageNumber, point),
 			onCancel: () => this.handleCancel(pageNumber),
 			onHover: (point) => this.handleHover(pageNumber, point),
@@ -859,7 +860,7 @@ export class AnnotationController {
 		this.redrawOverlay(pageNumber);
 	}
 
-	private handleStart(pageNumber: number, point: Point): void {
+	private handleStart(pageNumber: number, point: Point, stamp: number): void {
 		if (this.readOnly) return;
 		// Bound once so the switch below narrows it — a getter call in each
 		// case would be opaque to the narrowing and force a cast.
@@ -869,7 +870,7 @@ export class AnnotationController {
 			case 'highlighter':
 				this.drag = {
 					pageNumber,
-					mode: { kind: 'draw', tool, points: [this.clampToPage(pageNumber, point)], lastMovedAt: performance.now() },
+					mode: { kind: 'draw', tool, points: [this.clampToPage(pageNumber, point)], lastMovedAt: performance.now(), startStamp: stamp },
 				};
 				break;
 			case 'line':
@@ -983,7 +984,7 @@ export class AnnotationController {
 		return clampPointToBounds(point, mount.base.canvas.width, mount.base.canvas.height);
 	}
 
-	private handleMove(pageNumber: number, point: Point): void {
+	private handleMove(pageNumber: number, point: Point, stamp: number): void {
 		if (this.readOnly) return;
 		if (!this.drag || this.drag.pageNumber !== pageNumber) return;
 		const mode = this.drag.mode;
@@ -995,6 +996,30 @@ export class AnnotationController {
 				// and treating those as motion would mean the hold gesture
 				// could never be performed at all.
 				const clamped = this.clampToPage(pageNumber, point);
+
+				// Some browser and pen combinations report a pointerdown at the
+				// previous hover position, a few pixels behind where the pen
+				// actually touched, and then deliver the real contact sample
+				// with the very same timestamp. One instant cannot be two
+				// places, so when a move shares the stroke's starting
+				// timestamp it replaces the starting point instead of being
+				// added after it; otherwise every stroke would begin with a
+				// small hook from the stale position to the real one. A pen
+				// that reports pointerdown correctly never produces a
+				// disagreement here, so nothing changes for it.
+				//
+				// Once, and only for the first sample. A browser that rounds its
+				// timestamps coarsely can give several real samples the same
+				// stamp, and replacing on every one of them would eat the
+				// beginning of the stroke.
+				if (mode.startStamp !== null && mode.points.length === 1 && stamp === mode.startStamp) {
+					mode.startStamp = null;
+					mode.points[0] = clamped;
+					this.scheduleOverlayRedraw(pageNumber);
+					break;
+				}
+				mode.startStamp = null;
+
 				const previous = mode.points[mode.points.length - 1];
 				if (!previous || Math.hypot(clamped.x - previous.x, clamped.y - previous.y) > HOLD_STILLNESS_PX) {
 					mode.lastMovedAt = performance.now();
@@ -1212,27 +1237,41 @@ export class AnnotationController {
 		this.notify();
 	}
 
-	// The one place raw pen samples become the points a stroke is drawn and
-	// stored from. Both the live draft (draftFor) and the committed stroke
-	// (strokeFromDraft) call this, so the ink you see while writing is built
-	// from exactly the same points as the ink that is kept once the pen lifts.
-	// Before, only the commit did this, so the draft was drawn from the raw
-	// samples — still carrying pressure even with the pressure setting off —
-	// and visibly changed shape the moment the pen lifted.
-	//
-	// Thinned so that what you see the instant you lift the pen is what is
-	// stored. A save lands about a second after the pen lifts and re-renders
-	// the block from what it wrote — so simplifying there would visibly
-	// change the ink after the fact, which is exactly the bug that made a
-	// tapered stroke redraw itself flat (see the pressure note in
-	// src/markdown/inkBlockFormat.ts).
+	// Raw pen samples become the points a stroke is drawn and stored from in
+	// two steps that share the pressure rule, so the ink you see while
+	// writing is built the same way as the ink that is kept once the pen
+	// lifts. Before, only the commit applied the pressure setting, so the
+	// live stroke still carried pressure with the setting off and visibly
+	// changed shape the moment the pen lifted.
 	//
 	// Pressure is stripped rather than never captured, so the setting
-	// governs one place instead of being checked in the pointer layer, the
-	// renderer, and the serializer.
-	private strokePoints(raw: Point[]): Point[] {
-		const simplified = simplifyPoints(raw, SIMPLIFY_EPSILON);
+	// governs this one place instead of being checked in the pointer layer,
+	// the renderer, and the serializer.
+	private draftPoints(raw: Point[]): Point[] {
 		const keepPressure = this.options.isPressureEnabled?.() ?? true;
+		return keepPressure ? raw : raw.map(({ x, y }) => ({ x, y }));
+	}
+
+	// What is stored when the pen lifts.
+	//
+	// When the stroke carries pressure and pressure is on, every sample is
+	// kept. Thinning looks at position alone and fills pressure back in by a
+	// straight line between the survivors, which on a straight or slow
+	// stretch (where it keeps a few percent of the points) flattens real
+	// changes in pressure. The live stroke is not thinned either, so what is
+	// stored is exactly what was drawn.
+	//
+	// Otherwise (pressure off, or a pen or mouse that reports none) there is
+	// nothing of that kind to lose, so the stroke is thinned as before, to
+	// keep the file small. This happens
+	// once, on commit, rather than on every frame while writing: thinning
+	// the whole stroke each frame moved the already-written part of the
+	// line by up to half a pixel on most frames of curved writing, which
+	// could be felt as a vibration.
+	private strokePoints(raw: Point[]): Point[] {
+		const keepPressure = this.options.isPressureEnabled?.() ?? true;
+		if (keepPressure && hasPressure(raw)) return raw;
+		const simplified = simplifyPoints(raw, SIMPLIFY_EPSILON);
 		return keepPressure ? simplified : simplified.map(({ x, y }) => ({ x, y }));
 	}
 
@@ -1411,7 +1450,7 @@ export class AnnotationController {
 				tool: mode.tool,
 				color: this.getColor(),
 				width: this.inkWidth(pageNumber),
-				points: this.strokePoints(mode.points),
+				points: this.draftPoints(mode.points),
 			};
 		}
 		if (mode.kind === 'shape') {

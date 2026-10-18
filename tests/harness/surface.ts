@@ -85,7 +85,13 @@ export interface PointerOptions {
 	pointerType?: string;
 	pressure?: number;
 	isPrimary?: boolean;
+	// Event timestamp in milliseconds. By default each event gets a later one
+	// than the last, as a real browser's do; set it to give two events the
+	// same instant.
+	timeStamp?: number;
 }
+
+let nextStamp = 1000;
 
 class FakePointerEvent extends Event {
 	pointerId: number;
@@ -105,6 +111,8 @@ class FakePointerEvent extends Event {
 		this.isPrimary = init.isPrimary ?? true;
 		this.clientX = init.clientX;
 		this.clientY = init.clientY;
+		nextStamp += 8;
+		Object.defineProperty(this, 'timeStamp', { value: init.timeStamp ?? nextStamp });
 	}
 }
 
