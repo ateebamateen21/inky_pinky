@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pen recorder</title>
+<style>
+:root {
+	--bg: #f3f5f7;
+	--panel: #ffffff;
+	--ink: #17202a;
+	--muted: #5b6770;
+	--line: #d5dce2;
+	--accent: #1f5fd6;
+	--accent-ink: #ffffff;
+	--draw: #0d1b2a;
+	--dot: #d9382b;
+	color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #12161a;
+		--panel: #1a2026;
+		--ink: #e7edf2;
+		--muted: #9aa7b1;
+		--line: #2c353d;
+		--accent: #6da2ff;
+		--accent-ink: #0b1220;
+		--draw: #e7edf2;
+		--dot: #ff7a6b;
+	}
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+	margin: 0;
+	display: grid;
+	grid-template-rows: auto auto auto 1fr auto;
+	background: var(--bg);
+	color: var(--ink);
+	font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+header, .tests, .readout, footer { padding: 10px 16px; }
+h1 { margin: 0 0 2px; font-size: 18px; font-weight: 600; }
+.lede { margin: 0; color: var(--muted); max-width: 70ch; }
+.tests { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; border-top: 1px solid var(--line); }
+.tests button, footer button {
+	font: inherit;
+	padding: 5px 12px;
+	border-radius: 6px;
+	border: 1px solid var(--line);
+	background: var(--panel);
+	color: var(--ink);
+	cursor: pointer;
+}
+.tests button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#hint { flex-basis: 100%; margin: 2px 0 0; color: var(--muted); min-height: 3em; }
+.readout {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+	gap: 4px 16px;
+	border-top: 1px solid var(--line);
+	background: var(--panel);
+}
+.readout div { display: flex; flex-direction: column; min-width: 0; }
+.readout span { font-size: 12px; color: var(--muted); }
+.readout b { font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 1.5em; }
+.pad-wrap { position: relative; min-height: 220px; border-top: 1px solid var(--line); }
+#pad { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; user-select: none; -webkit-user-select: none; cursor: crosshair; }
+footer { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; border-top: 1px solid var(--line); background: var(--panel); }
+footer button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+footer label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+#count { font-variant-numeric: tabular-nums; color: var(--muted); }
+#warn { color: var(--dot); }
+</style>
+</head>
+<body>
+<header>
+	<h1>Pen recorder</h1>
+	<p class="lede">Move your pen over the drawing area. Pick a test below, do it for a few seconds, then pick the next one. When you are done, press Download recording and send me the file.</p>
+</header>
+
+<div class="tests" id="tests" role="group" aria-label="Tests">
+	<p id="hint" aria-live="polite"></p>
+</div>
+
+<div class="readout" id="readout">
+	<div><span>Last event</span><b id="f-kind">none yet</b></div>
+	<div><span>Pointer type</span><b id="f-type">-</b></div>
+	<div><span>Position x, y</span><b id="f-xy">-</b></div>
+	<div><span>Screen x, y</span><b id="f-sxy">-</b></div>
+	<div><span>Pressure</span><b id="f-p">-</b></div>
+	<div><span>Tilt x, y</span><b id="f-tilt">-</b></div>
+	<div><span>Twist</span><b id="f-twist">-</b></div>
+	<div><span>Contact size</span><b id="f-wh">-</b></div>
+	<div><span>Buttons held</span><b id="f-b">-</b></div>
+	<div><span>Button that changed</span><b id="f-bt">-</b></div>
+	<div><span>Move events per second</span><b id="f-mps">0</b></div>
+	<div><span>Samples per second</span><b id="f-sps">0</b></div>
+	<div><span>Whole-number positions while touching</span><b id="f-whole">-</b></div>
+</div>
+
+<div class="pad-wrap" id="wrap"><canvas id="pad" aria-label="Drawing area for the pen"></canvas></div>
+
+<footer>
+	<button class="primary" id="download" type="button">Download recording</button>
+	<button id="clear" type="button">Clear everything</button>
+	<label><input type="checkbox" id="dots" checked> Show every sample as a dot</label>
+	<span id="count">0 rows recorded</span>
+	<span id="warn" role="status"></span>
+</footer>
+
+<script>
+(() => {
+	const COLS = ['t', 'k', 'id', 'pt', 'x', 'y', 'sx', 'sy', 'p', 'tx', 'ty', 'tw', 'al', 'az', 'w', 'h', 'b', 'bt', 'g', 'n', 'lab'];
+	const KINDS = {
+		d: 'pointerdown',
+		u: 'pointerup',
+		x: 'pointercancel',
+		e: 'pointerenter',
+		l: 'pointerleave',
+		m: 'pointermove, the main event (n = how many coalesced samples it carried)',
+		c: 'one coalesced sample inside a pointermove (same g as its m row)',
+		r: 'pointerrawupdate, the unthrottled stream where the browser supports it',
+		M: 'mousedown',
+		U: 'mouseup',
+		A: 'auxclick',
+		K: 'contextmenu',
+	};
+	const COLUMN_NOTES = {
+		t: 'event timestamp in milliseconds',
+		k: 'kind of event, see kinds',
+		id: 'pointerId',
+		pt: 'pointerType',
+		x: 'clientX', y: 'clientY', sx: 'screenX', sy: 'screenY',
+		p: 'pressure', tx: 'tiltX', ty: 'tiltY', tw: 'twist',
+		al: 'altitudeAngle', az: 'azimuthAngle',
+		w: 'contact width', h: 'contact height',
+		b: 'buttons bitmask (1 touching, 2 barrel, 4 middle, 8 back, 16 forward, 32 eraser)',
+		bt: 'button that changed (-1 none, 0 touch or left, 1 middle, 2 barrel or right, 3 back, 4 forward, 5 eraser)',
+		g: 'group number linking an m row to its c rows (-1 when not applicable)',
+		n: 'coalesced sample count on an m row',
+		lab: 'test number that was selected, see tests',
+	};
+	const TESTS = [
+		{ name: 'Free', hint: 'Anything you like.' },
+		{ name: 'Hover only', hint: 'Hold the pen just above the screen and move it around. Do not touch the screen.' },
+		{ name: 'Slow straight line', hint: 'Draw a straight line slowly, left to right. Do it about three times.' },
+		{ name: 'Fast scribble', hint: 'Scribble fast for about five seconds.' },
+		{ name: 'Small writing', hint: 'Write a short sentence small, the way you write notes.' },
+		{ name: 'Pressure ramp', hint: 'Draw a line pressing very lightly, then harder, then lightly again.' },
+		{ name: 'Side button 1, hovering', hint: 'Hold the pen above the screen and press side button 1 a few times. Do not touch the screen.' },
+		{ name: 'Side button 2, hovering', hint: 'Hold the pen above the screen and press side button 2 a few times. Do not touch the screen.' },
+		{ name: 'Side buttons, touching', hint: 'Draw a line while holding side button 1. Then draw another while holding side button 2.' },
+		{ name: 'Eraser end', hint: 'If your pen has an eraser end, flip it and rub on the screen. Skip this if it has none.' },
+	];
+	const MAX_ROWS = 500000;
+
+	const $ = (id) => document.getElementById(id);
+	const canvas = $('pad');
+	const ctx = canvas.getContext('2d');
+	const startedAt = new Date();
+	const hasCoalesced = typeof PointerEvent !== 'undefined' && 'getCoalescedEvents' in PointerEvent.prototype;
+	const hasRaw = 'onpointerrawupdate' in window;
+
+	let rows = [];
+	let g = 0;
+	let lab = 0;
+	let full = false;
+	let strokes = [];
+	let cur = null;
+	let contactSamples = 0;
+	let wholeSamples = 0;
+	let recentSamples = [];
+	let recentMoves = [];
+	let last = null;
+	let dirty = false;
+	let dpr = 1;
+
+	const r3 = (v) => Math.round(v * 1000) / 1000;
+
+	function push(code, e, group, n) {
+		if (rows.length >= MAX_ROWS) {
+			full = true;
+			return;
+		}
+		rows.push([
+			r3(e.timeStamp), code, e.pointerId ?? null, e.pointerType ?? null,
+			e.clientX, e.clientY, e.screenX, e.screenY,
+			e.pressure ?? null, e.tiltX ?? null, e.tiltY ?? null, e.twist ?? null,
+			e.altitudeAngle ?? null, e.azimuthAngle ?? null,
+			e.width ?? null, e.height ?? null,
+			e.buttons, e.button, group, n, lab,
+		]);
+	}
+
+	function noteLast(code, e) {
+		last = {
+			code, pt: e.pointerType ?? 'mouse event', x: e.clientX, y: e.clientY, sx: e.screenX, sy: e.screenY,
+			p: e.pressure, tx: e.tiltX, ty: e.tiltY, tw: e.twist, w: e.width, h: e.height, b: e.buttons, bt: e.button,
+		};
+		dirty = true;
+	}
+
+	const BUTTON_BITS = [[1, 'touching'], [2, 'barrel'], [4, 'middle'], [8, 'back'], [16, 'forward'], [32, 'eraser']];
+	function buttonsText(b) {
+		if (b === 0) return '0 (none)';
+		const parts = BUTTON_BITS.filter(([bit]) => b & bit).map(([, name]) => name);
+		return b + ' = ' + parts.join(' + ');
+	}
+	const BUTTON_NAMES = { '-1': '-1 (none)', 0: '0 (touch or left)', 1: '1 (middle)', 2: '2 (barrel or right)', 3: '3 (back)', 4: '4 (forward)', 5: '5 (eraser)' };
+	const fmt = (v, d) => (v === undefined || v === null || Number.isNaN(v) ? '-' : Number(v).toFixed(d));
+
+	function show() {
+		dirty = false;
+		const now = performance.now();
+		recentSamples = recentSamples.filter((t) => now - t < 1000);
+		recentMoves = recentMoves.filter((t) => now - t < 1000);
+		$('f-mps').textContent = String(recentMoves.length);
+		$('f-sps').textContent = String(recentSamples.length);
+		$('f-whole').textContent = contactSamples === 0
+			? '-'
+			: Math.round((100 * wholeSamples) / contactSamples) + '% of ' + contactSamples.toLocaleString() + ' samples';
+		$('count').textContent = rows.length.toLocaleString() + ' rows recorded';
+		$('warn').textContent = full ? 'Row limit reached. Download now, then clear.' : '';
+		if (!last) return;
+		$('f-kind').textContent = last.code;
+		$('f-type').textContent = last.pt;
+		$('f-xy').textContent = fmt(last.x, 3) + ', ' + fmt(last.y, 3);
+		$('f-sxy').textContent = fmt(last.sx, 3) + ', ' + fmt(last.sy, 3);
+		$('f-p').textContent = fmt(last.p, 4);
+		$('f-tilt').textContent = fmt(last.tx, 0) + ', ' + fmt(last.ty, 0);
+		$('f-twist').textContent = fmt(last.tw, 0);
+		$('f-wh').textContent = fmt(last.w, 2) + ' x ' + fmt(last.h, 2);
+		$('f-b').textContent = buttonsText(last.b);
+		$('f-bt').textContent = BUTTON_NAMES[last.bt] ?? String(last.bt);
+	}
+
+	function tick() {
+		if (dirty) show();
+		requestAnimationFrame(tick);
+	}
+
+	const rel = (s) => {
+		const r = canvas.getBoundingClientRect();
+		return [s.clientX - r.left, s.clientY - r.top];
+	};
+
+	function drawSeg(a, b) {
+		ctx.beginPath();
+		ctx.moveTo(a[0], a[1]);
+		ctx.lineTo(b[0], b[1]);
+		ctx.stroke();
+	}
+
+	function drawDot(p) {
+		ctx.beginPath();
+		ctx.arc(p[0], p[1], 1.6, 0, Math.PI * 2);
+		ctx.fill();
+	}
+
+	function styles() {
+		const cs = getComputedStyle(document.documentElement);
+		ctx.strokeStyle = cs.getPropertyValue('--draw').trim();
+		ctx.fillStyle = cs.getPropertyValue('--dot').trim();
+		ctx.lineWidth = 1.2;
+		ctx.lineCap = 'round';
+		ctx.lineJoin = 'round';
+	}
+
+	function redraw() {
+		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+		styles();
+		const dots = $('dots').checked;
+		for (const s of strokes) {
+			for (let i = 1; i < s.length; i++) drawSeg(s[i - 1], s[i]);
+			if (dots) for (const p of s) drawDot(p);
+		}
+	}
+
+	function resize() {
+		dpr = window.devicePixelRatio || 1;
+		const r = $('wrap').getBoundingClientRect();
+		canvas.width = Math.max(1, Math.round(r.width * dpr));
+		canvas.height = Math.max(1, Math.round(r.height * dpr));
+		redraw();
+	}
+
+	function addPoint(s) {
+		const p = rel(s);
+		if (!cur) {
+			cur = [];
+			strokes.push(cur);
+		}
+		const prev = cur[cur.length - 1];
+		cur.push(p);
+		styles();
+		if (prev) drawSeg(prev, p);
+		if ($('dots').checked) drawDot(p);
+	}
+
+	const isContact = (e) => e.buttons !== 0 && e.pressure > 0;
+
+	canvas.addEventListener('pointerdown', (e) => {
+		try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* some pointer types cannot be captured */ }
+		push('d', e, -1, 0);
+		noteLast('pointerdown', e);
+		cur = null;
+		if (isContact(e)) {
+			contactSamples++;
+			if (Number.isInteger(e.clientX) && Number.isInteger(e.clientY)) wholeSamples++;
+			addPoint(e);
+		}
+	});
+
+	canvas.addEventListener('pointermove', (e) => {
+		g++;
+		const list = hasCoalesced ? e.getCoalescedEvents() : [];
+		push('m', e, g, list.length);
+		for (const s of list) push('c', s, g, list.length);
+		const samples = list.length ? list : [e];
+		const now = performance.now();
+		recentMoves.push(now);
+		for (const s of samples) {
+			recentSamples.push(now);
+			if (isContact(s)) {
+				contactSamples++;
+				if (Number.isInteger(s.clientX) && Number.isInteger(s.clientY)) wholeSamples++;
+				addPoint(s);
+			} else if (cur) {
+				cur = null;
+			}
+		}
+		noteLast('pointermove' + (list.length > 1 ? ' (' + list.length + ' samples)' : ''), e);
+	});
+
+	if (hasRaw) {
+		canvas.addEventListener('pointerrawupdate', (e) => {
+			push('r', e, -1, 0);
+		});
+	}
+
+	const end = (code, name) => (e) => {
+		push(code, e, -1, 0);
+		noteLast(name, e);
+		cur = null;
+	};
+	canvas.addEventListener('pointerup', end('u', 'pointerup'));
+	canvas.addEventListener('pointercancel', end('x', 'pointercancel'));
+	canvas.addEventListener('pointerenter', (e) => { push('e', e, -1, 0); noteLast('pointerenter', e); });
+	canvas.addEventListener('pointerleave', (e) => { push('l', e, -1, 0); noteLast('pointerleave', e); });
+
+	canvas.addEventListener('mousedown', (e) => { push('M', e, -1, 0); noteLast('mousedown', e); if (e.button !== 0) e.preventDefault(); });
+	canvas.addEventListener('mouseup', (e) => { push('U', e, -1, 0); noteLast('mouseup', e); });
+	canvas.addEventListener('auxclick', (e) => { push('A', e, -1, 0); noteLast('auxclick', e); e.preventDefault(); });
+	canvas.addEventListener('contextmenu', (e) => { push('K', e, -1, 0); noteLast('contextmenu', e); e.preventDefault(); });
+
+	const testsEl = $('tests');
+	const testButtons = TESTS.map((t, i) => {
+		const b = document.createElement('button');
+		b.type = 'button';
+		b.textContent = t.name;
+		b.setAttribute('aria-pressed', String(i === lab));
+		b.addEventListener('click', () => {
+			lab = i;
+			testButtons.forEach((x, j) => x.setAttribute('aria-pressed', String(j === i)));
+			$('hint').textContent = t.hint;
+		});
+		testsEl.insertBefore(b, $('hint'));
+		return b;
+	});
+	$('hint').textContent = TESTS[0].hint;
+
+	$('dots').addEventListener('change', redraw);
+
+	$('clear').addEventListener('click', () => {
+		if (rows.length > 0 && !confirm('Clear the drawing and all recorded data? Download first if you want to keep it.')) return;
+		rows = [];
+		g = 0;
+		full = false;
+		strokes = [];
+		cur = null;
+		contactSamples = 0;
+		wholeSamples = 0;
+		recentSamples = [];
+		recentMoves = [];
+		last = null;
+		redraw();
+		dirty = true;
+	});
+
+	$('download').addEventListener('click', () => {
+		const data = {
+			meta: {
+				tool: 'pen-recorder v1',
+				started: startedAt.toISOString(),
+				saved: new Date().toISOString(),
+				userAgent: navigator.userAgent,
+				platform: navigator.platform || null,
+				devicePixelRatio: window.devicePixelRatio,
+				viewport: [window.innerWidth, window.innerHeight],
+				screen: [screen.width, screen.height],
+				supports: { getCoalescedEvents: hasCoalesced, pointerrawupdate: hasRaw },
+				contactSamples,
+				wholeNumberContactSamples: wholeSamples,
+				rowCount: rows.length,
+				rowLimitReached: full,
+				columns: COLS,
+				columnNotes: COLUMN_NOTES,
+				kinds: KINDS,
+				tests: TESTS.map((t, i) => [i, t.name]),
+			},
+			rows,
+		};
+		const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+		const a = document.createElement('a');
+		const d = new Date();
+		const pad = (n) => String(n).padStart(2, '0');
+		a.download = 'pen-recording-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '.json';
+		a.href = URL.createObjectURL(blob);
+		document.body.appendChild(a);
+		a.click();
+		a.remove();
+		setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+	});
+
+	new ResizeObserver(resize).observe($('wrap'));
+	window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redraw);
+	resize();
+	show();
+	requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
