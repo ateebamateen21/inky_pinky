@@ -50,6 +50,13 @@ const PAGE_RETAIN_MARGIN = 3;
 // autosave features (see the plan's Write granularity note).
 const WRITE_DEBOUNCE_MS = 1500;
 
+// How long the pane has to stop changing size before pages are re-fitted
+// to it. A sidebar sliding open or shut (or a split being dragged) reports
+// a size change over and over; re-fitting on every one would re-measure
+// and re-layout every page dozens of times for a result only the last one
+// matters for.
+const RESIZE_SETTLE_MS = 150;
+
 // How far a note's editor sits from the point it annotates, and from the
 // page's edges when it has to be pulled back inside them.
 //
@@ -288,6 +295,8 @@ export class PdfAnnotateView extends FileView {
 	private currentPageFrame: number | null = null;
 	private disposeToolbar: (() => void) | null = null;
 	private addingPage = false;
+	// The pending re-fit after the pane changed size — see onResize.
+	private resizeTimer: number | null = null;
 
 	// Per-page pdf.js viewport, kept around for the coordinate conversion
 	// above — populated as pages render, cleared on teardown.
@@ -463,6 +472,24 @@ export class PdfAnnotateView extends FileView {
 	redoAnnotation(): void {
 		if (this.controller.isReadOnly()) return;
 		this.controller.redo();
+	}
+
+	// Obsidian calls this whenever the pane this view sits in changes size:
+	// a sidebar opening or closing, a split being dragged, the window
+	// resizing, a tablet rotating. Pages are laid out once, for the pane
+	// they first rendered in, and narrow themselves to fit a smaller pane
+	// (styles.css) but never widen into a larger one — so after a sidebar
+	// closed they stayed at the old width with empty space beside them, and
+	// the zoom ladder, whose ceiling is that old width, couldn't grow them
+	// either. Re-fitting here is what the fit-to-width button already did,
+	// just without needing to be pressed.
+	onResize(): void {
+		super.onResize();
+		if (this.resizeTimer !== null) window.clearTimeout(this.resizeTimer);
+		this.resizeTimer = window.setTimeout(() => {
+			this.resizeTimer = null;
+			this.refitWidth();
+		}, RESIZE_SETTLE_MS);
 	}
 
 	async onOpen(): Promise<void> {
@@ -847,6 +874,10 @@ export class PdfAnnotateView extends FileView {
 	// a page of handwriting lost to "Stop annotating" on 2026-09-16.
 	async onClose(): Promise<void> {
 		await super.onClose();
+		if (this.resizeTimer !== null) {
+			window.clearTimeout(this.resizeTimer);
+			this.resizeTimer = null;
+		}
 		this.controller.destroy();
 	}
 
