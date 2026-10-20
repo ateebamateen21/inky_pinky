@@ -13,6 +13,16 @@ import {
 	type InklingSettings,
 } from './settings';
 
+// Shared by the three pen-button settings: one list of what a held button can
+// do, so they cannot drift apart.
+const PEN_BUTTON_OPTIONS: Record<string, string> = {
+	none: 'Nothing',
+	pen: 'Pen',
+	highlighter: 'Highlighter',
+	eraser: 'Eraser',
+	select: 'Lasso (select)',
+};
+
 // The Obsidian-facing half of the settings. The pure half — the shape,
 // the defaults, the defensive read of whatever loadData() returns, and
 // reading or writing one setting by key — lives in ./settings so it can be
@@ -83,6 +93,24 @@ export class InklingSettingTab extends PluginSettingTab {
 							defaultValue: defaults.shapeRecognition,
 							options: { hold: 'Hold to snap', off: 'Off' },
 						},
+					},
+					{
+						name: 'Pen button: eraser',
+						desc: 'What the pen does while its eraser button (or eraser end) is held. On many pens the first side button reports as this. Switches back when you let go.',
+						aliases: ['stylus', 'side button', 'barrel'],
+						control: { type: 'dropdown', key: 'penButtonEraser', defaultValue: defaults.penButtonEraser, options: PEN_BUTTON_OPTIONS },
+					},
+					{
+						name: 'Pen button: barrel',
+						desc: 'What the pen does while its barrel button is held. This is the single side button on many pens.',
+						aliases: ['stylus', 'side button'],
+						control: { type: 'dropdown', key: 'penButtonBarrel', defaultValue: defaults.penButtonBarrel, options: PEN_BUTTON_OPTIONS },
+					},
+					{
+						name: 'Pen button: middle',
+						desc: 'What the pen does while a button that reports as a middle click is held. On many two-button pens the second side button reports as this. If a button does nothing, try the others: which one it counts as depends on your pen and driver.',
+						aliases: ['stylus', 'side button'],
+						control: { type: 'dropdown', key: 'penButtonMiddle', defaultValue: defaults.penButtonMiddle, options: PEN_BUTTON_OPTIONS },
 					},
 				],
 			},

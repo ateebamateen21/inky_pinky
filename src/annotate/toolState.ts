@@ -36,6 +36,10 @@ export class ToolState {
 	// Whether `tool` reflects a choice the user actually made, as opposed to
 	// the starting default. See suggestTool.
 	private toolChosen = false;
+	// The tool a held pen button is standing in front of, or null when none
+	// is. See beginTemporaryTool.
+	private heldTool: ToolType | null = null;
+	private heldToolChosen = false;
 	private color: string = DEFAULT_COLOR;
 	private width: number = DEFAULT_WIDTH;
 	// Color/width are remembered per tool (pen, highlighter, eraser, each
@@ -59,7 +63,36 @@ export class ToolState {
 
 	setTool(tool: ToolType): void {
 		this.toolChosen = true;
+		// Picking a tool while a pen button holds another one is a decision
+		// that outranks the button: there is nothing left to go back to.
+		this.heldTool = null;
 		if (tool === this.tool) return;
+		this.switchTo(tool);
+	}
+
+	// Switches for as long as a pen button is held, and remembers the tool to
+	// return to. Goes through the same repaint as a real change, so the
+	// toolbar shows the eraser while the button is down. Unlike setTool it
+	// does not count as the user choosing a tool.
+	beginTemporaryTool(tool: ToolType): void {
+		if (this.heldTool === null) {
+			this.heldTool = this.tool;
+			this.heldToolChosen = this.toolChosen;
+		}
+		if (tool !== this.tool) this.switchTo(tool);
+	}
+
+	// Back to what was selected before the button went down. Does nothing if
+	// no button was holding a tool, or if the user picked one meanwhile.
+	endTemporaryTool(): void {
+		if (this.heldTool === null) return;
+		const back = this.heldTool;
+		this.heldTool = null;
+		this.toolChosen = this.heldToolChosen;
+		if (back !== this.tool) this.switchTo(back);
+	}
+
+	private switchTo(tool: ToolType): void {
 		this.tool = tool;
 		if (tool !== 'select') {
 			const style = this.styleFor(tool);

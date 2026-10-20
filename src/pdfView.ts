@@ -430,6 +430,11 @@ export class PdfAnnotateView extends FileView {
 			onToggleNavigation: () => this.toggleNavigationPanel(),
 			onEditNote: (pageNumber, point, existing) => this.editNote(pageNumber, point, existing),
 			isPressureEnabled: () => getSettings().pressure,
+			getPenButtonTools: () => ({
+				barrel: getSettings().penButtonBarrel,
+				middle: getSettings().penButtonMiddle,
+				eraser: getSettings().penButtonEraser,
+			}),
 			isShapeRecognitionEnabled: () => getSettings().shapeRecognition === 'hold',
 			onToggleInversion: () => this.toggleInversion(),
 			isInverted: () => this.isInverted(),

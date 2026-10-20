@@ -68,6 +68,15 @@ const HOLD_STILLNESS_PX = 2.5;
 
 type HandleName = 'nw' | 'ne' | 'sw' | 'se';
 
+// 'barrel', 'middle' and 'eraser' are the names the browser gives a pen's
+// buttons (bits 2, 4 and 32 of PointerEvent.buttons), not physical positions:
+// which one a given button reports as depends on the pen and its driver.
+export interface PenButtonTools {
+	barrel: ToolType | 'none';
+	middle: ToolType | 'none';
+	eraser: ToolType | 'none';
+}
+
 type DragMode =
 	| { kind: 'draw'; tool: DrawToolType; points: Point[]; lastMovedAt: number; startStamp: number | null }
 	| { kind: 'shape'; tool: ShapeToolType; start: Point; end: Point }
@@ -209,6 +218,11 @@ export interface AnnotationControllerOptions {
 	// commit time rather than at capture: turning it off should change
 	// how the next stroke is drawn, not require reopening the file.
 	isPressureEnabled?: () => boolean;
+	// What each of a pen's side buttons does while it is held: the tool it
+	// stands in for, or 'none'. Read every time a button changes, so editing
+	// the setting takes effect without reopening the file. A host that does
+	// not supply this leaves the buttons alone.
+	getPenButtonTools?: () => PenButtonTools;
 	// Whether holding the pen still at the end of a stroke snaps it to a
 	// clean shape. Off unless the host says otherwise, so a surface that
 	// never opted in cannot silently rewrite handwriting.
@@ -831,6 +845,7 @@ export class AnnotationController {
 			onEnd: (point) => this.handleEnd(pageNumber, point),
 			onCancel: () => this.handleCancel(pageNumber),
 			onHover: (point) => this.handleHover(pageNumber, point),
+			onButtons: (mask) => this.handleSideButtons(mask),
 			onZoomChange: (scale) => {
 				this.zoomByPage.set(pageNumber, scale);
 				this.notify();
@@ -858,6 +873,36 @@ export class AnnotationController {
 		}
 		this.eraserCursor = { pageNumber, point };
 		this.redrawOverlay(pageNumber);
+	}
+
+	// The pen's side buttons currently held, as the mask the pointer layer
+	// reports.
+	private sideMask = 0;
+
+	private handleSideButtons(mask: number): void {
+		this.sideMask = mask;
+		// A button pressed or let go mid-stroke waits for the stroke to end:
+		// switching tools under a gesture in progress would drop it, and with
+		// an erase in progress that would lose its undo step. The tool the
+		// stroke began with is the one it finishes with.
+		if (this.drag) return;
+		this.applySideButtons();
+	}
+
+	// Puts the shared tool in line with the buttons held now: the tool of the
+	// first held button that has one, in the order eraser, barrel, middle, or
+	// back to the user's own tool when none does.
+	private applySideButtons(): void {
+		const tools = this.options.getPenButtonTools?.();
+		const held: Array<ToolType | 'none'> = [];
+		if (tools && !this.readOnly) {
+			if (this.sideMask & 32) held.push(tools.eraser);
+			if (this.sideMask & 2) held.push(tools.barrel);
+			if (this.sideMask & 4) held.push(tools.middle);
+		}
+		const tool = held.find((candidate): candidate is ToolType => candidate !== 'none');
+		if (tool) this.toolState.beginTemporaryTool(tool);
+		else this.toolState.endTemporaryTool();
 	}
 
 	private handleStart(pageNumber: number, point: Point, stamp: number): void {
@@ -1098,6 +1143,8 @@ export class AnnotationController {
 		this.drag = null;
 		this.redrawOverlay(pageNumber);
 		this.notify();
+		// A button let go during the stroke hands the tool back now.
+		this.applySideButtons();
 	}
 
 	// A pointercancel — the browser deciding mid-gesture to hand the pointer
@@ -1134,6 +1181,8 @@ export class AnnotationController {
 		this.drag = null;
 		this.redrawOverlay(pageNumber);
 		this.notify();
+		// A button let go during the stroke hands the tool back now.
+		this.applySideButtons();
 	}
 
 	// Accepts either one annotation or a batch — a snapped highlighter stroke
