@@ -89,6 +89,9 @@ export interface PointerOptions {
 	// than the last, as a real browser's do; set it to give two events the
 	// same instant.
 	timeStamp?: number;
+	// PointerEvent.buttons. Defaults to 1 (touching) for everything but the
+	// events that end a gesture, which report 0, as a real pen does.
+	buttons?: number;
 }
 
 let nextStamp = 1000;
@@ -98,6 +101,7 @@ class FakePointerEvent extends Event {
 	pointerType: string;
 	pressure: number;
 	isPrimary: boolean;
+	buttons: number;
 	width = 1;
 	height = 1;
 	clientX: number;
@@ -109,6 +113,7 @@ class FakePointerEvent extends Event {
 		this.pointerType = init.pointerType ?? 'pen';
 		this.pressure = init.pressure ?? 0.5;
 		this.isPrimary = init.isPrimary ?? true;
+		this.buttons = init.buttons ?? (type === 'pointerup' || type === 'pointercancel' || type === 'pointerleave' ? 0 : 1);
 		this.clientX = init.clientX;
 		this.clientY = init.clientY;
 		nextStamp += 8;

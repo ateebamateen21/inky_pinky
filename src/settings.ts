@@ -26,6 +26,11 @@ export type { PageSizeName };
 
 export type SaveCadence = 'auto' | 'frequent';
 export type ShapeRecognition = 'off' | 'hold';
+
+// What a pen's side button does while it is held. 'none' leaves the button
+// alone, so a stroke drawn with it held uses whatever tool is selected.
+export type PenButtonTool = 'none' | 'pen' | 'highlighter' | 'eraser' | 'select';
+const PEN_BUTTON_TOOLS = ['none', 'pen', 'highlighter', 'eraser', 'select'] as const;
 export type DarkInversion = 'off' | 'on' | 'follow-theme';
 
 export interface InklingSettings {
@@ -45,6 +50,12 @@ export interface InklingSettings {
 	pressure: boolean;
 	smoothing: boolean;
 	shapeRecognition: ShapeRecognition;
+	// A pen's buttons reach the browser under a few fixed names, and which
+	// name a given physical button gets depends on the pen and its driver.
+	// So there is one setting per name rather than per physical button.
+	penButtonBarrel: PenButtonTool;
+	penButtonMiddle: PenButtonTool;
+	penButtonEraser: PenButtonTool;
 	darkInversion: DarkInversion;
 	toolbarStartsCollapsed: boolean;
 	// Whether an ink block offers a caption to write.
@@ -81,6 +92,9 @@ export function defaultSettings(): InklingSettings {
 		pressure: true,
 		smoothing: true,
 		shapeRecognition: 'hold',
+		penButtonBarrel: 'eraser',
+		penButtonMiddle: 'highlighter',
+		penButtonEraser: 'eraser',
 		// Off, not 'follow-theme'. A scan opens looking like the paper it was
 		// scanned from; inverting it is a choice about one unreadable document,
 		// not something a dark theme should decide on the reader's behalf. The
@@ -193,6 +207,9 @@ export function normalizeSettings(raw: unknown): InklingSettings {
 		pressure: bool(source.pressure, defaults.pressure),
 		smoothing: bool(source.smoothing, defaults.smoothing),
 		shapeRecognition: pick(source.shapeRecognition, ['off', 'hold'] as const, defaults.shapeRecognition),
+		penButtonBarrel: pick(source.penButtonBarrel, PEN_BUTTON_TOOLS, defaults.penButtonBarrel),
+		penButtonMiddle: pick(source.penButtonMiddle, PEN_BUTTON_TOOLS, defaults.penButtonMiddle),
+		penButtonEraser: pick(source.penButtonEraser, PEN_BUTTON_TOOLS, defaults.penButtonEraser),
 		darkInversion: pick(source.darkInversion, ['off', 'on', 'follow-theme'] as const, defaults.darkInversion),
 		toolbarStartsCollapsed: bool(source.toolbarStartsCollapsed, defaults.toolbarStartsCollapsed),
 		blockCaptions: bool(source.blockCaptions, defaults.blockCaptions),

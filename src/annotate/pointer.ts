@@ -11,6 +11,12 @@ export interface GestureHandlers {
 	// (the eraser's outline, currently) track where the pointer is without
 	// needing an active gesture. Optional since most tools don't care.
 	onHover?(point: Point | null): void;
+	// Fired when the set of a pen's side buttons held down changes, with a
+	// mask of the barrel (2), middle (4) and eraser (32) bits of
+	// `PointerEvent.buttons`. 0 means none. Mouse and touch never produce
+	// it. Fired before the gesture's own start so a button held at touch-down
+	// has already chosen its tool.
+	onButtons?(mask: number): void;
 	// Fired on every pinch-zoom move, and once more at the end — lets a live
 	// zoom-level indicator (the toolbar's) stay current throughout the
 	// gesture, not just once it settles.
@@ -57,6 +63,10 @@ export interface ViewZoomHold {
 // measure contact geometry report width/height as 1, so this only ever
 // rejects an implausibly large "pen" contact, never a normal one.
 const MAX_PLAUSIBLE_PEN_CONTACT_PX = 40;
+
+// The bits of PointerEvent.buttons a pen's side buttons use: barrel (2),
+// middle (4) and eraser (32). Bit 1 is contact with the glass, not a button.
+const SIDE_BUTTON_BITS = 2 | 4 | 32;
 
 // Stylus pointer-capture behavior varies across Android vendors/WebViews in
 // practice (see the plan's Architecture notes) — a capture failure shouldn't
@@ -272,6 +282,20 @@ const WHEEL_SETTLE_MS = 200;
 // cross-device native-gesture-recognition timing.
 export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => GestureHandlers | null): () => void {
 	let activePointerId: number | null = null;
+	let sideMask = 0;
+	let penTouching = false;
+
+	const syncButtons = (event: PointerEvent) => {
+		const mask = event.pointerType === 'pen' ? event.buttons & SIDE_BUTTON_BITS : 0;
+		if (mask === sideMask) return;
+		sideMask = mask;
+		getHandlers()?.onButtons?.(mask);
+	};
+
+	// A pen is touching when it is pressed and something is down. Pressure 0
+	// with a button down is a side button pressed in the air, which looks like
+	// contact to anything that only reads `buttons`.
+	const isPenContact = (event: PointerEvent) => event.pressure > 0 && event.buttons !== 0;
 	let touchPan: {
 		pointerId: number;
 		startY: number;
@@ -433,6 +457,20 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 			return;
 		}
 
+		if (event.pointerType === 'pen') {
+			syncButtons(event);
+			// A side button pressed while the pen hovers arrives as a
+			// pointerdown with no contact: pressure 0 and no contact bit. It
+			// is a button, not the start of a stroke, and treating it as one
+			// drew a dot (or a line, if the pen moved) in mid-air.
+			if (event.pressure === 0 && (event.buttons & 1) === 0 && event.buttons !== 0) {
+				penTouching = false;
+				event.preventDefault();
+				return;
+			}
+			penTouching = isPenContact(event);
+		}
+
 		// A gesture is already in progress on a different pointer (e.g. a
 		// palm registering as a second, spurious pointer mid-stroke) —
 		// ignore it rather than hijacking the active one.
@@ -514,6 +552,36 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		// Hover stays on the single event: a cursor does not need sub-frame
 		// resolution, and asking for coalesced samples on every hover move
 		// would be work spent on a ring that is redrawn once a frame anyway.
+		if (event.pointerType === 'pen') {
+			syncButtons(event);
+			const contact = isPenContact(event);
+
+			// With a side button already held, the pen touching down only adds
+			// the contact bit to `buttons`: the browser fires no pointerdown,
+			// because the pointer was already down. So contact that begins on
+			// a move starts the stroke, but only while a button is held, so a
+			// stroke the plugin ended on purpose is not restarted mid-touch.
+			if (contact && !penTouching && activePointerId === null && sideMask !== 0 && !isImplausiblePenContact(event)) {
+				const starting = getHandlers();
+				if (starting) {
+					stopMomentum();
+					activePointerId = event.pointerId;
+					capturePointer(el, event.pointerId);
+					starting.onStart(toPoint(event), event);
+				}
+			}
+
+			// The mirror image: lifting the pen while a button is still held
+			// fires no pointerup either, just a move with the contact gone.
+			if (activePointerId === event.pointerId && event.pressure === 0 && (event.buttons & 1) === 0 && event.buttons !== 0) {
+				penTouching = false;
+				activePointerId = null;
+				getHandlers()?.onEnd(toPoint(event), event);
+				getHandlers()?.onHover?.(toPoint(event));
+				return;
+			}
+			penTouching = contact;
+		}
 		if (event.pointerType !== 'touch') getHandlers()?.onHover?.(toPoint(event));
 		if (event.pointerId !== activePointerId) return;
 		const handlers = getHandlers();
@@ -536,6 +604,15 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 	const onPointerLeave = (event: PointerEvent) => {
 		if (event.pointerType === 'touch') return;
 		getHandlers()?.onHover?.(null);
+		// Out of range, the buttons can no longer be read, and a pen that
+		// has gone has nothing held.
+		if (event.pointerType === 'pen') {
+			penTouching = false;
+			if (sideMask !== 0) {
+				sideMask = 0;
+				getHandlers()?.onButtons?.(0);
+			}
+		}
 	};
 
 	const endGesture = (event: PointerEvent, cancelled: boolean) => {
@@ -566,8 +643,22 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		else handlers?.onEnd(toPoint(event), event);
 	};
 
-	const onPointerUp = (event: PointerEvent) => endGesture(event, false);
-	const onPointerCancel = (event: PointerEvent) => endGesture(event, true);
+	// After the gesture's own end, so a stroke finishes with the tool it began
+	// with before a released button hands the tool back.
+	const onPointerUp = (event: PointerEvent) => {
+		endGesture(event, false);
+		if (event.pointerType === 'pen') {
+			penTouching = false;
+			syncButtons(event);
+		}
+	};
+	const onPointerCancel = (event: PointerEvent) => {
+		endGesture(event, true);
+		if (event.pointerType === 'pen') {
+			penTouching = false;
+			syncButtons(event);
+		}
+	};
 
 	// Desktop zoom. A *plain* wheel is left entirely alone — losing
 	// document scroll would be a far worse trade than gaining zoom — so
