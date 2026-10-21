@@ -347,7 +347,14 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		() => controller.setToolbarCollapsed(!controller.isToolbarCollapsed()),
 	);
 
-	bar.append(toolGroup, separator(), colorGroup, separator(), widthGroup, separator(), actionGroup, statusGroup, collapseButton);
+	// Outside every group the collapse hides, on purpose: this is also the
+	// way out of full screen, and with the strip collapsed on a tablet there
+	// is no keyboard to press Esc on.
+	const fullscreenButton = iconButton('inkling-tool-button', { icon: 'expand', fallback: '⤢', title: 'Full screen' }, () =>
+		controller.toggleFullscreen(),
+	);
+
+	bar.append(toolGroup, separator(), colorGroup, separator(), widthGroup, separator(), actionGroup, statusGroup, fullscreenButton, collapseButton);
 	toolbar.append(bar);
 	host.appendChild(toolbar);
 
@@ -368,6 +375,12 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		for (const group of [colorGroup, widthGroup, statusGroup]) group.hidden = collapsed;
 		for (const button of [redoButton, deleteButton, clearPageButton, addPageButton, addPageMenuButton, invertButton, navButton]) button.hidden = collapsed;
 		setIconOrText(collapseButton, collapsed ? 'chevrons-down' : 'chevrons-up', collapsed ? '⌄' : '⌃');
+		fullscreenButton.hidden = !controller.supportsFullscreen();
+		const fullscreen = controller.isFullscreen();
+		setIconOrText(fullscreenButton, fullscreen ? 'shrink' : 'expand', fullscreen ? '⤡' : '⤢');
+		setTooltip(fullscreenButton, fullscreen ? 'Exit full screen' : 'Full screen');
+		fullscreenButton.setAttribute('aria-label', fullscreen ? 'Exit full screen' : 'Full screen');
+		fullscreenButton.setAttribute('aria-pressed', String(fullscreen));
 		setTooltip(collapseButton, collapsed ? 'Show tools' : 'Collapse tools');
 		for (const [tool, button] of toolButtons) {
 			const active = tool === activeTool;

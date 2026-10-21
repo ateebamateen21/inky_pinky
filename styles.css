@@ -1066,6 +1066,26 @@
 	padding-top: 0;
 }
 
+/* Full screen (see src/pdfFullscreen.ts). The view's ancestors up to the app
+   container carry inkling-fs-chain; everything else inside them is hidden,
+   which leaves the one path from the window down to the PDF.
+
+   Sibling leaves are left showing: in stacked-tabs mode they are the strip
+   of other tabs down the side, which is how you switch tabs without leaving
+   full screen, and in ordinary tabs Obsidian hides inactive leaves itself.
+   The second rule is a backstop for chrome that is not a sibling of the
+   path in every layout (the title bar and status bar, on some versions). */
+body.inkling-fullscreen .inkling-fs-chain > :not(.inkling-fs-chain):not(.inkling-fs-keep):not(.workspace-leaf) {
+	display: none !important;
+}
+
+body.inkling-fullscreen .titlebar,
+body.inkling-fullscreen .status-bar,
+body.inkling-fullscreen .workspace-ribbon,
+body.inkling-fullscreen .mobile-navbar {
+	display: none !important;
+}
+
 /* Anything of ours hidden from script actually hides.
    ==================================================
 

@@ -125,6 +125,14 @@ export default class InklingPlugin extends Plugin {
 			checkCallback: (checking) => this.withAnnotateView(checking, (view) => view.redoAnnotation()),
 		});
 
+		// No default hotkey, for the same reason as the two above; Esc leaves
+		// full screen while the view has focus.
+		this.addCommand({
+			id: 'toggle-fullscreen',
+			name: 'Toggle full screen for the annotated PDF',
+			checkCallback: (checking) => this.withAnnotateView(checking, (view) => view.toggleFullscreen()),
+		});
+
 		this.addCommand({
 			id: 'compact-ink-blocks',
 			name: 'Compact and repair ink blocks in this note',
