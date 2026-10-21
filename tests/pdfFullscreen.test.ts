@@ -41,7 +41,10 @@ function buildWorkspace() {
 		el(
 			'div',
 			'workspace-tab-container',
-			el('div', 'workspace-leaf', el('div', 'workspace-leaf-content', el('div', 'view-header'), content)),
+			// Stacked tabs: each tab's vertical strip sits inside the tab
+			// container, either beside the leaves or inside one.
+			el('div', 'workspace-tab-header strip-in-container'),
+			el('div', 'workspace-leaf', el('div', 'workspace-tab-header strip-in-leaf'), el('div', 'workspace-leaf-content', el('div', 'view-header'), content)),
 			el('div', 'workspace-leaf stacked'),
 		),
 	);
@@ -108,6 +111,16 @@ describe('full screen', () => {
 		enterFullscreen(content);
 
 		expect(hidden(find('.stacked'))).toBe(false);
+	});
+
+	it('leaves the stacked tabs’ vertical strips showing, wherever Obsidian puts them', () => {
+		const content = buildWorkspace();
+		enterFullscreen(content);
+
+		expect(hidden(find('.strip-in-container'))).toBe(false);
+		expect(hidden(find('.strip-in-leaf'))).toBe(false);
+		// ...while the tab strip of ordinary tabs, a different element, still goes.
+		expect(hidden(find('.workspace-tab-header-container'))).toBe(true);
 	});
 
 	it('shows nothing as hidden before it is entered', () => {

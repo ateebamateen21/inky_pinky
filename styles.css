@@ -1070,12 +1070,17 @@
    container carry inkling-fs-chain; everything else inside them is hidden,
    which leaves the one path from the window down to the PDF.
 
-   Sibling leaves are left showing: in stacked-tabs mode they are the strip
-   of other tabs down the side, which is how you switch tabs without leaving
-   full screen, and in ordinary tabs Obsidian hides inactive leaves itself.
+   Two kinds of child are left showing, both for stacked-tabs mode. Sibling
+   leaves are the other panes in the stack. And tab headers: in stacked mode
+   Obsidian puts the vertical strip of every tab (icon, rotated title, close
+   button) inside the tab container, beside or inside the leaves, and the
+   stack's layout is built around those strips being there. Hiding them left
+   the other panes laid out as though full width, sliding under the PDF. In
+   ordinary tabs the headers live in the tab strip above the container, which
+   is hidden as a whole and so is unaffected.
    The second rule is a backstop for chrome that is not a sibling of the
    path in every layout (the title bar and status bar, on some versions). */
-body.inkling-fullscreen .inkling-fs-chain > :not(.inkling-fs-chain):not(.inkling-fs-keep):not(.workspace-leaf) {
+body.inkling-fullscreen .inkling-fs-chain > :not(.inkling-fs-chain):not(.inkling-fs-keep):not(.workspace-leaf):not(.workspace-tab-header) {
 	display: none !important;
 }
 
