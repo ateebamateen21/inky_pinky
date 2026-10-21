@@ -181,6 +181,11 @@ export interface AnnotationControllerOptions {
 	// the pages were first laid out. Canvas resolution and annotations are
 	// untouched — only the size pages are drawn at changes.
 	refitWidth?: () => void;
+	// Full screen for the whole view, which only the PDF view has: ask for
+	// it to be turned on or off, and whether it is on. Both are needed for
+	// the toolbar to offer the button at all.
+	isFullscreen?: () => boolean;
+	toggleFullscreen?: () => void;
 	// The view zoom at which `placeholder`'s whole page fits the pane's
 	// height, and what to hold still while getting there (the page's top
 	// edge at the top of the pane).
@@ -595,6 +600,31 @@ export class AnnotationController {
 		this.notify();
 	}
 
+	// The pane this view sits in changed width by `paneRatio`, and the host
+	// has just rescaled every page's base width by the same factor (so
+	// "fit-to-width" now means the new width).
+	//
+	// A wider pane (ratio above 1) lowers the view zoom by that factor, so
+	// the pages come out the size they already were: the reader sees no
+	// change, but the ladder's ceiling has moved out to the new edge. A
+	// narrower pane leaves the zoom alone, since pages have to shrink with
+	// it. Unlike applyViewZoom this is a change of baseline, not of what is
+	// on screen, so a magnified page's pan offset is scaled by how much its
+	// box really changed rather than by the zoom ratio.
+	rebaseViewZoom(paneRatio: number): void {
+		const host = this.options.setViewZoom;
+		if (!host || !(paneRatio > 0)) return;
+		const previous = this.viewZoom;
+		const next = paneRatio > 1 ? Math.min(1, Math.max(MIN_VIEW_ZOOM, previous / paneRatio)) : previous;
+		if (next !== previous) {
+			this.viewZoom = next;
+			host(next);
+		}
+		const boxRatio = (paneRatio * next) / previous;
+		if (Math.abs(boxRatio - 1) > 1e-9) for (const mount of this.pages.values()) rescaleZoomTranslate(mount.content, boxRatio);
+		if (next !== previous) this.notify();
+	}
+
 	// Zooms by a factor along the ladder (see zoomLadder.ts): the whole view
 	// first while pages are smaller than fit-to-width, then the current page.
 	zoomBy(factor: number): void {
@@ -607,6 +637,27 @@ export class AnnotationController {
 		});
 		if (next.view !== this.viewZoom) this.applyViewZoom(next.view, this.viewportHold(target.mount, target.placeholder));
 		if (next.page !== page) this.zoomCurrentPage(() => next.page);
+	}
+
+	// Whether this surface can go full screen at all — only the PDF view.
+	supportsFullscreen(): boolean {
+		return this.options.isFullscreen !== undefined && this.options.toggleFullscreen !== undefined;
+	}
+
+	isFullscreen(): boolean {
+		return this.options.isFullscreen?.() ?? false;
+	}
+
+	toggleFullscreen(): void {
+		this.options.toggleFullscreen?.();
+		this.notify();
+	}
+
+	// For the host to say full screen changed by some route other than the
+	// toolbar button — Esc, the command, switching tab — so the button's
+	// icon catches up.
+	fullscreenChanged(): void {
+		this.notify();
 	}
 
 	isViewZoomLocked(): boolean {

@@ -16,6 +16,7 @@ import { maxWriteIntervalMs } from './pdf/saveCadence';
 import { placeWithin } from './pdf/popoverPlacement';
 import { defaultSettings, type InklingSettings } from './settings';
 import { applyTemplate, insertPageLike, pageSizeFor } from './templates';
+import { enterFullscreen, exitFullscreen } from './pdfFullscreen';
 
 // pdfjs-dist is pinned to an exact version (see package.json) — 5.4.624+
 // calls Uint8Array.prototype.toHex() unconditionally when computing a PDF's
@@ -50,11 +51,11 @@ const PAGE_RETAIN_MARGIN = 3;
 // autosave features (see the plan's Write granularity note).
 const WRITE_DEBOUNCE_MS = 1500;
 
-// How long the pane has to stop changing size before pages are re-fitted
-// to it. A sidebar sliding open or shut (or a split being dragged) reports
-// a size change over and over; re-fitting on every one would re-measure
-// and re-layout every page dozens of times for a result only the last one
-// matters for.
+// How long the pane has to stop changing size before the view re-bases
+// itself on the new width (see onResize). A sidebar sliding open or shut,
+// or a split being dragged, reports a size change over and over; doing
+// the work on every one would re-measure every page dozens of times for a
+// result only the last one matters for.
 const RESIZE_SETTLE_MS = 150;
 
 // How far a note's editor sits from the point it annotates, and from the
@@ -297,6 +298,10 @@ export class PdfAnnotateView extends FileView {
 	private addingPage = false;
 	// The pending re-fit after the pane changed size — see onResize.
 	private resizeTimer: number | null = null;
+	// Full screen, and the document it was entered in (a popout window has
+	// its own), so leaving can undo exactly what entering did.
+	private fullscreen = false;
+	private fullscreenDoc: Document | null = null;
 
 	// Per-page pdf.js viewport, kept around for the coordinate conversion
 	// above — populated as pages render, cleared on teardown.
@@ -424,6 +429,8 @@ export class PdfAnnotateView extends FileView {
 			onZoomSettled: (pageNumber, scale) => void this.upgradeResolution(pageNumber, scale),
 			setViewZoom: (zoom, hold) => this.setViewZoom(zoom, hold),
 			refitWidth: () => this.refitWidth(),
+			isFullscreen: () => this.fullscreen,
+			toggleFullscreen: () => this.toggleFullscreen(),
 			fitPage: (placeholder) => this.fitPage(placeholder),
 			// Relative to the page's first render, so an unzoomed page draws
 			// exactly as it always has, and a page upgradeResolution has
@@ -474,21 +481,56 @@ export class PdfAnnotateView extends FileView {
 		this.controller.redo();
 	}
 
+	isFullscreen(): boolean {
+		return this.fullscreen;
+	}
+
+	toggleFullscreen(): void {
+		this.setFullscreen(!this.fullscreen);
+	}
+
+	// Hides Obsidian's own chrome around this view, or brings it back (see
+	// pdfFullscreen.ts for how).
+	//
+	// Going in fits the pages to the width, because the pane is suddenly
+	// much wider and pressing the button was a deliberate request for more
+	// room — unlike a sidebar closing, which is not (see onResize). Coming
+	// out re-bases instead, so a zoom picked while in full screen keeps its
+	// proportions in the smaller pane rather than being reset.
+	setFullscreen(on: boolean): void {
+		if (on === this.fullscreen) return;
+		this.fullscreen = on;
+		if (on) {
+			this.fullscreenDoc = this.contentEl.ownerDocument;
+			enterFullscreen(this.contentEl);
+			// Measured now, not when Obsidian reports the resize: the
+			// hiding above is plain CSS, so the new width is already real.
+			this.controller.fitWidth();
+		} else {
+			if (this.fullscreenDoc) exitFullscreen(this.fullscreenDoc);
+			this.fullscreenDoc = null;
+			this.rebaseToPane();
+		}
+		this.controller.fullscreenChanged();
+	}
+
 	// Obsidian calls this whenever the pane this view sits in changes size:
 	// a sidebar opening or closing, a split being dragged, the window
-	// resizing, a tablet rotating. Pages are laid out once, for the pane
-	// they first rendered in, and narrow themselves to fit a smaller pane
-	// (styles.css) but never widen into a larger one — so after a sidebar
-	// closed they stayed at the old width with empty space beside them, and
-	// the zoom ladder, whose ceiling is that old width, couldn't grow them
-	// either. Re-fitting here is what the fit-to-width button already did,
-	// just without needing to be pressed.
+	// resizing, a tablet rotating.
+	//
+	// What this must NOT do is fit the pages to the new width on its own.
+	// Closing a sidebar, maybe by accident, is not a request to rearrange
+	// the page being read; that is what the fit-to-width button is for. It
+	// only has to make sure the view *knows* about the space: "1" on the
+	// zoom ladder means fit-to-width, and it used to keep meaning the width
+	// the pages were first laid out for, so a wider pane left them stuck
+	// below a ceiling that could never reach the new edge.
 	onResize(): void {
 		super.onResize();
 		if (this.resizeTimer !== null) window.clearTimeout(this.resizeTimer);
 		this.resizeTimer = window.setTimeout(() => {
 			this.resizeTimer = null;
-			this.refitWidth();
+			this.rebaseToPane();
 		}, RESIZE_SETTLE_MS);
 	}
 
@@ -508,6 +550,14 @@ export class PdfAnnotateView extends FileView {
 		// Obsidian fires this on a theme switch, which is what follow-theme
 		// has to react to.
 		this.registerEvent(this.app.workspace.on('css-change', () => this.applyInversion()));
+		// Full screen hides every other pane, so if focus moves to one —
+		// a click on a stacked tab, a link that opens beside this — it
+		// would be hidden with nothing to show where it went.
+		this.registerEvent(
+			this.app.workspace.on('active-leaf-change', (leaf) => {
+				if (this.fullscreen && leaf !== this.leaf) this.setFullscreen(false);
+			}),
+		);
 	}
 
 	// Bare letters are safe here in a way they would not be in a note: this
@@ -563,6 +613,13 @@ export class PdfAnnotateView extends FileView {
 		}
 		if (event.key === 'PageUp') {
 			this.scrollToPage(Math.max(this.currentPageNumber - 1, 1));
+			return true;
+		}
+
+		// Before the read-only gate: leaving full screen has nothing to do
+		// with whether the file can be written.
+		if (event.key === 'Escape' && this.fullscreen) {
+			this.setFullscreen(false);
 			return true;
 		}
 
@@ -878,6 +935,9 @@ export class PdfAnnotateView extends FileView {
 			window.clearTimeout(this.resizeTimer);
 			this.resizeTimer = null;
 		}
+		// Before the controller goes: leaving tells it, and the page must
+		// not be left with another view's chrome still hidden.
+		this.setFullscreen(false);
 		this.controller.destroy();
 	}
 
@@ -908,9 +968,14 @@ export class PdfAnnotateView extends FileView {
 	private refitWidth(): void {
 		const available = this.availablePageWidth();
 		if (available <= 0) return;
+		this.holdingPlace(() => this.rescalePages(available));
+	}
 
-		// Remember how far through the current page the top of the view is,
-		// so the same spot is on screen once everything has resized.
+	// Runs `change` and then scrolls so the spot that was at the top of the
+	// view is still there: how far through the current page the top of the
+	// view is gets remembered first, and put back after whatever resized
+	// the pages.
+	private holdingPlace(change: () => void): void {
 		const anchor = this.placeholderFor(this.currentPageNumber);
 		const paneTop = this.contentEl.getBoundingClientRect().top;
 		let progress = 0;
@@ -919,27 +984,77 @@ export class PdfAnnotateView extends FileView {
 			progress = (paneTop - rect.top) / (rect.height || 1);
 		}
 
+		change();
+
+		if (anchor) {
+			const rect = anchor.getBoundingClientRect();
+			this.contentEl.scrollTop += rect.top + progress * rect.height - paneTop;
+		}
+	}
+
+	// Gives every page's base width the new pane width's proportions. Only
+	// the size pages are drawn at changes: the canvas keeps its resolution
+	// and so does every stroke, which is stored in canvas space.
+	private rescalePages(available: number): void {
+		const density = window.devicePixelRatio || 1;
 		for (const [pageNumber, usedWidth] of this.layoutWidths) {
 			const scale = this.layoutScales.get(pageNumber);
 			if (scale === undefined || usedWidth <= 0 || Math.abs(usedWidth - available) < 0.5) continue;
 			const ratio = available / usedWidth;
-			this.layoutScales.set(pageNumber, scale * ratio);
+			const nextScale = scale * ratio;
+			this.layoutScales.set(pageNumber, nextScale);
 			this.layoutWidths.set(pageNumber, available);
 
 			const placeholder = this.placeholderFor(pageNumber);
 			const width = parseFloat(placeholder?.style.getPropertyValue('--inkling-page-width') ?? '');
 			// The aspect ratio is untouched: width and height scale together.
 			if (placeholder && Number.isFinite(width)) placeholder.setCssProps({ '--inkling-page-width': `${width * ratio}px` });
-			// A page drawn larger than before would otherwise be a blown-up
-			// copy of its old raster; this is the same sharpening a pinch
-			// zoom asks for.
-			if (ratio > 1.15 && this.renderedPages.has(pageNumber)) void this.upgradeResolution(pageNumber, ratio);
-		}
 
-		if (anchor) {
-			const rect = anchor.getBoundingClientRect();
-			this.contentEl.scrollTop += rect.top + progress * rect.height - paneTop;
+			// A page that can now be drawn larger than its canvas was made
+			// for would otherwise be a blown-up copy of its old raster. How
+			// much larger is measured from the first render rather than
+			// from this step, so a pane that grows twice is still sharpened
+			// for its full size; upgradeResolution itself skips a page
+			// already dense enough.
+			const base = this.baseScales.get(pageNumber);
+			if (base !== undefined && this.renderedPages.has(pageNumber)) {
+				const grown = (nextScale * density) / base;
+				if (grown > 1.15) void this.upgradeResolution(pageNumber, grown);
+			}
 		}
+	}
+
+	// The pane changed width: change what "fit-to-width" means without
+	// changing anything the reader can see.
+	//
+	// Wider pane: every page's base width grows to the new fit, and the
+	// view zoom drops by the same factor, so each page ends up exactly the
+	// size it already was. The ladder's ceiling is now the new edge, so
+	// zooming in or pressing fit-to-width grows the pages into the space,
+	// but nothing happens until then.
+	//
+	// Narrower pane: the pages have to shrink to fit anyway (styles.css
+	// would clamp them), so this only brings the bookkeeping in line.
+	private rebaseToPane(): void {
+		const available = this.availablePageWidth();
+		if (available <= 0) return;
+
+		// Pages share one reference width — the width every one of them was
+		// last laid out for. They can differ by a hair when a page was laid
+		// out inside the settle delay, so the one furthest from the pane
+		// today is the one that says how much it has changed.
+		let reference = 0;
+		for (const width of this.layoutWidths.values()) {
+			if (width <= 0) continue;
+			if (reference === 0 || Math.abs(Math.log(available / width)) > Math.abs(Math.log(available / reference))) reference = width;
+		}
+		if (reference === 0 || Math.abs(reference - available) < 0.5) return;
+
+		const paneRatio = available / reference;
+		this.holdingPlace(() => {
+			this.rescalePages(available);
+			this.controller.rebaseViewZoom(paneRatio);
+		});
 	}
 
 	// The view zoom at which `placeholder`'s whole page fits the pane's
