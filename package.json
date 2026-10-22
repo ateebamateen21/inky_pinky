@@ -33,6 +33,7 @@
 	},
 	"dependencies": {
 		"pdf-lib": "1.17.1",
-		"pdfjs-dist": "5.4.530"
+		"pdfjs-dist": "5.4.530",
+		"perfect-freehand": "^1.2.3"
 	}
 }
