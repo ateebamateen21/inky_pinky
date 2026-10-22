@@ -1368,11 +1368,10 @@ export class AnnotationController {
 	// the whole stroke each frame moved the already-written part of the
 	// line by up to half a pixel on most frames of curved writing, which
 	// could be felt as a vibration.
-	private strokePoints(raw: Point[]): Point[] {
+	    private strokePoints(raw: Point[]): Point[] {
 		const keepPressure = this.options.isPressureEnabled?.() ?? true;
-		if (keepPressure && hasPressure(raw)) return raw;
-		const simplified = simplifyPoints(raw, SIMPLIFY_EPSILON);
-		return keepPressure ? simplified : simplified.map(({ x, y }) => ({ x, y }));
+		// 
+		return keepPressure ? raw : raw.map(({ x, y }) => ({ x, y }));
 	}
 
 	private strokeFromDraft(pageNumber: number, mode: { tool: DrawToolType; points: Point[] }): StrokeAnnotation {
