@@ -550,12 +550,17 @@ export class PdfAnnotateView extends FileView {
 		// Obsidian fires this on a theme switch, which is what follow-theme
 		// has to react to.
 		this.registerEvent(this.app.workspace.on('css-change', () => this.applyInversion()));
-		// Full screen hides every other pane, so if focus moves to one —
-		// a click on a stacked tab, a link that opens beside this — it
-		// would be hidden with nothing to show where it went.
+		// Focus moving to another pane is not a reason to leave full screen:
+		// a stacked tab slid out from under this one is still on screen, and
+		// clicking it should not throw the window back to normal. The one
+		// case that does need handling is focus landing on a pane that full
+		// screen has hidden (a file opened in another split, say), because
+		// nothing would show where it went and Esc, which only this view
+		// listens for while focused, would no longer reach it.
 		this.registerEvent(
 			this.app.workspace.on('active-leaf-change', (leaf) => {
-				if (this.fullscreen && leaf !== this.leaf) this.setFullscreen(false);
+				if (!this.fullscreen || !leaf || leaf === this.leaf) return;
+				if (leaf.view.containerEl.getClientRects().length === 0) this.setFullscreen(false);
 			}),
 		);
 	}
