@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compactInkBlocks } from '../../src/markdown/compactInkBlocks';
-import { INK_BLOCK_LANGUAGE, serializeInkBlock } from '../../src/markdown/inkBlockFormat';
+import { INK_BLOCK_LANGUAGE, parseInkBlock, serializeInkBlock } from '../../src/markdown/inkBlockFormat';
 import type { Annotation, Point } from '../../src/annotate/types';
 
 function densePoints(count: number): Point[] {
@@ -19,18 +19,9 @@ function blockBody(annotations: Annotation[], id = 'b1'): string {
 	return serializeInkBlock({ version: 1, id, width: 800, height: 450, annotations });
 }
 
+const EMPTY = '{"version":1,"width":800,"height":450,"annotations":[]}';
+
 describe('compactInkBlocks', () => {
-	it('drops the redundant points in a block', () => {
-		const source = note(blockBody([stroke('s1', densePoints(200))]));
-		const result = compactInkBlocks(source);
-
-		expect(result.blocks).toBe(1);
-		expect(result.pointsBefore).toBe(200);
-		// A straight run collapses to its two ends.
-		expect(result.pointsAfter).toBe(2);
-		expect(result.content.length).toBeLessThan(source.length);
-	});
-
 	it('leaves a note with no ink blocks exactly as it was', () => {
 		const source = '# Heading\n\nSome prose.\n\n```js\nconst x = 1;\n```\n';
 		const result = compactInkBlocks(source);
@@ -38,15 +29,22 @@ describe('compactInkBlocks', () => {
 		expect(result.blocks).toBe(0);
 	});
 
-	it('compacts every block in a note holding several', () => {
-		const source = note(
-			blockBody([stroke('s1', densePoints(100))], 'b1'),
-			blockBody([stroke('s2', densePoints(100))], 'b2'),
-			blockBody([stroke('s3', densePoints(100))], 'b3'),
-		);
+	// Ink is no longer thinned anywhere, so a block that already has an id has
+	// nothing to repair and its bytes must not move.
+	it('does not touch a block that already has an id', () => {
+		const source = note(blockBody([stroke('s1', densePoints(200))]));
 		const result = compactInkBlocks(source);
-		expect(result.blocks).toBe(3);
-		expect(result.pointsBefore).toBe(300);
+		expect(result.content).toBe(source);
+		expect(result.blocks).toBe(0);
+	});
+
+	it('keeps every point of a stroke in a block it repairs', () => {
+		const body = serializeInkBlock({ version: 1, width: 800, height: 450, annotations: [stroke('s1', densePoints(200))] });
+		const result = compactInkBlocks(note(body));
+		expect(result.blocks).toBe(1);
+		const reparsed = parseInkBlock(result.content.split('\n').slice(1, -1).join('\n'));
+		const kept = reparsed.data.annotations[0];
+		expect(kept?.kind === 'stroke' ? kept.points.length : 0).toBe(200);
 	});
 
 	it('keeps each block its own, without bleeding one into the next', () => {
@@ -57,15 +55,14 @@ describe('compactInkBlocks', () => {
 	});
 
 	it('preserves the prose around the blocks', () => {
-		const source = `intro\n\n${note(blockBody([stroke('s1', densePoints(80))]))}\n\noutro`;
+		const source = `intro\n\n${note(EMPTY)}\n\noutro`;
 		const result = compactInkBlocks(source);
 		expect(result.content.startsWith('intro')).toBe(true);
 		expect(result.content.endsWith('outro')).toBe(true);
-		expect(result.content).toContain('prose between'.slice(0, 0) || 'intro');
 	});
 
 	// The same rule the save path follows: something we could not fully
-	// read is something we must not rewrite, or compacting it would
+	// read is something we must not rewrite, or repairing it would
 	// silently discard whatever we failed to understand.
 	it('refuses to touch a block it cannot fully parse', () => {
 		const broken = `\`\`\`${INK_BLOCK_LANGUAGE}\nnot json at all\n\`\`\``;
@@ -82,34 +79,23 @@ describe('compactInkBlocks', () => {
 		expect(result.skipped).toBe(1);
 	});
 
-	it('reports no change for a block that is already compact', () => {
-		const source = note(blockBody([stroke('s1', [{ x: 0, y: 0 }, { x: 100, y: 100 }])]));
-		const result = compactInkBlocks(source);
-		expect(result.pointsBefore).toBe(result.pointsAfter);
-		expect(result.content).toBe(source);
-	});
-
 	it('leaves shapes and notes alone', () => {
 		const annotations: Annotation[] = [
 			{ id: 'sh', kind: 'shape', tool: 'rectangle', color: '#1e1e1e', width: 3, start: { x: 0, y: 0 }, end: { x: 50, y: 50 } },
 		];
-		const source = note(blockBody(annotations));
-		const result = compactInkBlocks(source);
-		expect(result.content).toContain('"kind":"shape"');
-		expect(result.pointsBefore).toBe(0);
+		const result = compactInkBlocks(note(blockBody(annotations)));
+		expect(result.content).toBe(note(blockBody(annotations)));
 	});
 
 	it('is idempotent — running it twice changes nothing the second time', () => {
-		const source = note(blockBody([stroke('s1', densePoints(200))]));
-		const once = compactInkBlocks(source);
+		const once = compactInkBlocks(note(EMPTY, EMPTY));
 		const twice = compactInkBlocks(once.content);
 		expect(twice.content).toBe(once.content);
+		expect(twice.blocks).toBe(0);
 	});
 });
 
 describe('compactInkBlocks id repair', () => {
-	const EMPTY = '{"version":1,"width":800,"height":450,"annotations":[]}';
-
 	// Two blocks with no id and no ink in them are the same bytes, so nothing
 	// can tell them apart — which is how one block's drawing was written into
 	// another's. An id is what makes them distinguishable again.
@@ -127,23 +113,15 @@ describe('compactInkBlocks id repair', () => {
 		expect(result.stamped).toBe(0);
 		expect(result.content).toContain('ink-keepme');
 	});
-
-	it('rewrites a block that needs only an id, with nothing to thin', () => {
-		const result = compactInkBlocks(note(EMPTY));
-		expect(result.pointsBefore).toBe(0);
-		expect(result.blocks).toBe(1);
-		expect(result.content).toContain('"id":"');
-	});
 });
 
 describe('a captioned block', () => {
-	it('keeps its caption through compaction', () => {
-		// Compaction rewrites every block in a note at once, so a field it did
-		// not know about would be dropped from all of them silently — the
-		// shape of two data-loss bugs this file has already had.
+	it('keeps its caption through repair', () => {
+		// Repair rewrites every block it touches, so a field it did not know
+		// about would be dropped silently — the shape of two data-loss bugs
+		// this file has already had.
 		const body = serializeInkBlock({
 			version: 1,
-			id: 'ink-captioned',
 			width: 800,
 			height: 450,
 			caption: "Newton's second law",

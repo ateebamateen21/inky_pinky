@@ -25,8 +25,6 @@ import {
 } from './pointer';
 import { MIN_VIEW_ZOOM, stepLadder } from './zoomLadder';
 import { recognizeShape } from './recognize';
-import { SIMPLIFY_EPSILON, simplifyPoints } from './simplify';
-import { hasPressure } from './stroke';
 import { handleRects, isHighlight, renderBase, renderHighlights, renderOverlay } from './render';
 import { AnnotationStore } from './store';
 import { HistoryStack } from './history';
@@ -1337,40 +1335,22 @@ export class AnnotationController {
 		this.notify();
 	}
 
-	// Raw pen samples become the points a stroke is drawn and stored from in
-	// two steps that share the pressure rule, so the ink you see while
-	// writing is built the same way as the ink that is kept once the pen
-	// lifts. Before, only the commit applied the pressure setting, so the
-	// live stroke still carried pressure with the setting off and visibly
-	// changed shape the moment the pen lifted.
+	// The one place raw pen samples become the points a stroke is drawn and
+	// stored from. The live stroke (draftFor) and the committed one
+	// (strokeFromDraft) both go through it, so the ink you see while writing
+	// is built from exactly the points that are kept once the pen lifts.
 	//
-	// Pressure is stripped rather than never captured, so the setting
-	// governs this one place instead of being checked in the pointer layer,
-	// the renderer, and the serializer.
-	private draftPoints(raw: Point[]): Point[] {
+	// Every sample is kept: nothing is thinned. Thinning looked at position
+	// alone, and the smoothed curve drawn through the survivors strayed from
+	// the live one by up to a few pixels on fast cursive, so a letter visibly
+	// changed shape the moment the pen lifted. It also flattened real
+	// pressure changes along straight stretches.
+	//
+	// Pressure is stripped when the setting is off, rather than never
+	// captured, so the setting governs this one place instead of being
+	// checked in the pointer layer, the renderer, and the serializer.
+	private strokePoints(raw: Point[]): Point[] {
 		const keepPressure = this.options.isPressureEnabled?.() ?? true;
-		return keepPressure ? raw : raw.map(({ x, y }) => ({ x, y }));
-	}
-
-	// What is stored when the pen lifts.
-	//
-	// When the stroke carries pressure and pressure is on, every sample is
-	// kept. Thinning looks at position alone and fills pressure back in by a
-	// straight line between the survivors, which on a straight or slow
-	// stretch (where it keeps a few percent of the points) flattens real
-	// changes in pressure. The live stroke is not thinned either, so what is
-	// stored is exactly what was drawn.
-	//
-	// Otherwise (pressure off, or a pen or mouse that reports none) there is
-	// nothing of that kind to lose, so the stroke is thinned as before, to
-	// keep the file small. This happens
-	// once, on commit, rather than on every frame while writing: thinning
-	// the whole stroke each frame moved the already-written part of the
-	// line by up to half a pixel on most frames of curved writing, which
-	// could be felt as a vibration.
-	    private strokePoints(raw: Point[]): Point[] {
-		const keepPressure = this.options.isPressureEnabled?.() ?? true;
-		// 
 		return keepPressure ? raw : raw.map(({ x, y }) => ({ x, y }));
 	}
 
@@ -1549,7 +1529,7 @@ export class AnnotationController {
 				tool: mode.tool,
 				color: this.getColor(),
 				width: this.inkWidth(pageNumber),
-				points: this.draftPoints(mode.points),
+				points: this.strokePoints(mode.points),
 			};
 		}
 		if (mode.kind === 'shape') {
