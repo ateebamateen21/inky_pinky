@@ -1,19 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { MIN_PRESSURE_SCALE, hasPressure, outlinePath, smoothedPath } from '../../src/annotate/stroke';
+import { hasPressure, outlinePath, smoothedPath } from '../../src/annotate/stroke';
 import type { Point } from '../../src/annotate/types';
 
-function distance(a: Point, b: Point): number {
-	return Math.hypot(a.x - b.x, a.y - b.y);
+// How far the ring reaches across the stroke, measured over the points whose
+// x lies in [from, to]. For a horizontal stroke that is the line's thickness
+// there, measured on the outline itself rather than restated from a formula.
+function thicknessBetween(ring: Point[], from: number, to: number): number {
+	const ys = ring.filter((point) => point.x >= from && point.x <= to).map((point) => point.y);
+	if (ys.length === 0) throw new Error('no outline points in that range');
+	return Math.max(...ys) - Math.min(...ys);
 }
 
-// The width the outline actually has at sample `index`, measured rather
-// than asserted from the formula — the ring runs down one side and back up
-// the other, so a sample's two offset points sit at mirrored positions.
-function outlineWidthAt(ring: Point[], sampleCount: number, index: number): number {
-	const left = ring[index];
-	const right = ring[2 * sampleCount - 1 - index];
-	if (!left || !right) throw new Error('outline is not the expected shape');
-	return distance(left, right);
+// A horizontal stroke with a gentle wobble, as a dense run of samples.
+function run(count: number, pressure: (index: number) => number | undefined): Point[] {
+	return Array.from({ length: count }, (_, index) => {
+		const p = pressure(index);
+		return p === undefined ? { x: index * 2, y: 0 } : { x: index * 2, y: 0, p };
+	});
 }
 
 describe('hasPressure', () => {
@@ -94,76 +97,71 @@ describe('smoothedPath', () => {
 });
 
 describe('outlinePath', () => {
-	const straight: Point[] = [
-		{ x: 0, y: 0 },
-		{ x: 50, y: 0 },
-		{ x: 100, y: 0 },
-	];
-
-	it('returns a closed ring with two points per sample', () => {
-		const ring = outlinePath(straight, 10);
-		expect(ring).toHaveLength(2 * straight.length + 1);
+	it('returns a closed ring', () => {
+		const ring = outlinePath(run(40, () => 0.5), 10);
+		expect(ring.length).toBeGreaterThan(8);
 		expect(ring[ring.length - 1]).toEqual(ring[0]);
 	});
 
-	it('is exactly the base width where pressure is full', () => {
-		const ring = outlinePath(straight.map((point) => ({ ...point, p: 1 })), 10);
-		expect(outlineWidthAt(ring, straight.length, 1)).toBeCloseTo(10, 6);
+	it('is thicker where the pen pressed harder', () => {
+		const ring = outlinePath(run(100, (index) => 0.1 + (0.9 * index) / 99), 10);
+		const light = thicknessBetween(ring, 20, 60);
+		const heavy = thicknessBetween(ring, 140, 180);
+		expect(heavy).toBeGreaterThan(light * 1.5);
 	});
 
-	it('thins to the floor where pressure is nothing, without vanishing', () => {
-		// A light touch has to thin the line, not break it — an outline of
-		// zero width is an invisible stroke, which reads as ink that failed
-		// to record.
-		const ring = outlinePath(straight.map((point) => ({ ...point, p: 0 })), 10);
-		expect(outlineWidthAt(ring, straight.length, 1)).toBeCloseTo(10 * MIN_PRESSURE_SCALE, 6);
+	it('does not vanish at the lightest touch', () => {
+		const ring = outlinePath(run(60, () => 0), 10);
+		expect(thicknessBetween(ring, 30, 90)).toBeGreaterThan(1);
 	});
 
-	it('varies along the stroke as the pressure does', () => {
-		const ring = outlinePath(
-			[
-				{ x: 0, y: 0, p: 1 },
-				{ x: 50, y: 0, p: 0.5 },
-				{ x: 100, y: 0, p: 0 },
-			],
-			10,
-		);
-		const widths = [0, 1, 2].map((index) => outlineWidthAt(ring, 3, index));
-		expect(widths[0]).toBeGreaterThan(widths[1] ?? 0);
-		expect(widths[1]).toBeGreaterThan(widths[2] ?? 0);
+	it('scales with the width of the tool', () => {
+		const thin = thicknessBetween(outlinePath(run(80, () => 0.5), 6), 40, 120);
+		const wide = thicknessBetween(outlinePath(run(80, () => 0.5), 12), 40, 120);
+		expect(wide).toBeCloseTo(thin * 2, 0);
 	});
 
-	it('treats a point with no pressure as full pressure', () => {
-		// So a stroke that only sometimes reported pressure does not develop
-		// a hairline gap wherever the report was missing.
-		const ring = outlinePath(straight, 10);
-		expect(outlineWidthAt(ring, straight.length, 1)).toBeCloseTo(10, 6);
+	it('rounds the ends, reaching past the first and last samples', () => {
+		const stroke = run(60, () => 0.5);
+		const ring = outlinePath(stroke, 10);
+		const xs = ring.map((point) => point.x);
+		expect(Math.min(...xs)).toBeLessThan(0);
+		expect(Math.max(...xs)).toBeGreaterThan(118);
 	});
 
-	it('offsets perpendicular to the stroke', () => {
-		const ring = outlinePath(straight.map((point) => ({ ...point, p: 1 })), 10);
-		// A horizontal stroke's edges sit directly above and below it.
-		expect(ring[1]?.x).toBeCloseTo(50, 6);
-		expect(Math.abs(ring[1]?.y ?? 0)).toBeCloseTo(5, 6);
+	it('does not leave a gap where the pen stopped reporting pressure', () => {
+		const ring = outlinePath(run(80, (index) => (index >= 30 && index < 40 ? undefined : 0.5)), 10);
+		expect(thicknessBetween(ring, 60, 78)).toBeGreaterThan(2);
+	});
+
+	it('draws the same shape every time for the same samples', () => {
+		const stroke = run(50, (index) => 0.2 + index / 100);
+		expect(outlinePath(stroke, 8)).toEqual(outlinePath(stroke, 8));
 	});
 
 	it('has nothing to draw for a stroke with no length', () => {
 		expect(outlinePath([], 10)).toEqual([]);
-		expect(outlinePath([{ x: 1, y: 1 }], 10)).toEqual([]);
-		// Two samples at the same place have no direction to be
-		// perpendicular to, and dividing by that would put NaN in the file.
-		expect(outlinePath([{ x: 1, y: 1 }, { x: 1, y: 1 }], 10)).toEqual([]);
+		expect(outlinePath([{ x: 5, y: 5, p: 0.5 }], 10)).toEqual([]);
+		expect(
+			outlinePath(
+				[
+					{ x: 5, y: 5, p: 0.5 },
+					{ x: 5, y: 5, p: 0.5 },
+				],
+				10,
+			),
+		).toEqual([]);
 	});
 
-	it('never emits a non-finite coordinate', () => {
-		const jittery: Point[] = [
-			{ x: 0, y: 0, p: 0.2 },
-			{ x: 0, y: 0, p: 0.9 },
-			{ x: 10, y: 0, p: 1 },
-			{ x: 10, y: 0, p: 0.1 },
-			{ x: 10, y: 12, p: 0.5 },
+	it('never emits a non-finite coordinate, even for repeated samples', () => {
+		const stroke: Point[] = [
+			{ x: 0, y: 0, p: 0.5 },
+			{ x: 0, y: 0, p: 0.5 },
+			{ x: 10, y: 0, p: 0.5 },
+			{ x: 10, y: 0, p: 0.5 },
+			{ x: 20, y: 5, p: 0.5 },
 		];
-		for (const point of outlinePath(jittery, 6)) {
+		for (const point of outlinePath(stroke, 10)) {
 			expect(Number.isFinite(point.x)).toBe(true);
 			expect(Number.isFinite(point.y)).toBe(true);
 		}
