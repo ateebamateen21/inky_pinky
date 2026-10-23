@@ -135,7 +135,7 @@ export default class InklingPlugin extends Plugin {
 
 		this.addCommand({
 			id: 'compact-ink-blocks',
-			name: 'Compact and repair ink blocks in this note',
+			name: 'Repair ink blocks in this note',
 			checkCallback: (checking) => {
 				const file = this.app.workspace.getActiveViewOfType(MarkdownView)?.file;
 				if (!file) return false;
@@ -217,9 +217,8 @@ export default class InklingPlugin extends Plugin {
 	// Runs `act` on the active annotate view, or reports that there is none.
 	// The checking pass must not act, which is the whole contract of
 	// checkCallback and easy to get subtly wrong when it is inlined.
-	// Thins the strokes in every ink block in a note, for blocks written
-	// before strokes were thinned as they were drawn (see
-	// annotate/simplify.ts).
+	// Repairs the ink blocks in a note by giving each block that has no id
+	// one, so a save can tell it from any other block.
 	//
 	// Through the vault rather than the open editor, unlike the ink block
 	// save path. That path makes a small, targeted replaceRange inside one
@@ -229,9 +228,9 @@ export default class InklingPlugin extends Plugin {
 	// time this was written that way. vault.process is atomic and does not
 	// care which mode the note is being viewed in.
 	//
-	// The cost is that this is not a single editor undo step. It is the one
-	// operation in the plugin that deliberately discards detail, so it says
-	// so plainly, and Obsidian's own file recovery is the way back.
+	// The cost is that this is not a single editor undo step. It changes no
+	// stroke, but it does rewrite the note, and Obsidian's own file recovery
+	// is the way back.
 	private async compactInkBlocksIn(file: TFile): Promise<void> {
 		const source = await this.app.vault.read(file);
 		const result = compactInkBlocks(source);
@@ -239,7 +238,7 @@ export default class InklingPlugin extends Plugin {
 		const unreadable = result.skipped > 0 ? ` ${result.skipped} could not be read and were left alone.` : '';
 
 		if (result.blocks === 0) {
-			new Notice(`Inkling: nothing to compact in this note.${unreadable}`);
+			new Notice(`Inkling: nothing to repair in this note.${unreadable}`);
 			return;
 		}
 
@@ -248,33 +247,25 @@ export default class InklingPlugin extends Plugin {
 			await this.app.vault.process(file, (current) => {
 				// Refuses rather than overwrites if the note moved under us
 				// between reading it and writing it back. Recomputing here
-				// instead would mean silently compacting something the user
-				// has not seen the numbers for.
+				// instead would mean silently repairing something the user
+				// has not seen the count for.
 				if (current !== source) return current;
 				wrote = true;
 				return result.content;
 			});
 
 			if (!wrote) {
-				new Notice('Inkling: the note changed while compacting, so nothing was written. Try again.');
+				new Notice('Inkling: the note changed while repairing, so nothing was written. Try again.');
 				return;
 			}
 		} catch (error) {
-			console.error('Inkling: failed to compact ink blocks.', error);
-			new Notice('Inkling: could not compact this note. Nothing was changed.');
+			console.error('Inkling: failed to repair ink blocks.', error);
+			new Notice('Inkling: could not repair this note. Nothing was changed.');
 			return;
 		}
 
-		const dropped =
-			result.pointsBefore > 0 ? Math.round(((result.pointsBefore - result.pointsAfter) / result.pointsBefore) * 100) : 0;
-		const mb = (bytes: number): string => `${(bytes / 1024 / 1024).toFixed(2)} MB`;
-		// Named separately because they are different repairs: thinning is
-		// about size, an id is about a block being findable at all when it
-		// comes to save.
-		const ids = result.stamped > 0 ? ` ${result.stamped} block${result.stamped === 1 ? '' : 's'} given an id.` : '';
 		new Notice(
-			`Inkling: rewrote ${result.blocks} ink block${result.blocks === 1 ? '' : 's'} — ` +
-				`${dropped}% fewer points, ${mb(source.length)} to ${mb(result.content.length)}.${ids}${unreadable}`,
+			`Inkling: gave ${result.stamped} ink block${result.stamped === 1 ? '' : 's'} an id.${unreadable}`,
 			10_000,
 		);
 	}

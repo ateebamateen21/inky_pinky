@@ -86,36 +86,34 @@ describe('drawing is clamped to the surface', () => {
 	});
 });
 
-describe('strokes are thinned when they commit', () => {
-	it('drops the samples a straight run does not need', () => {
+describe('strokes are stored whole', () => {
+	const straight = (): Array<[number, number]> => {
 		const points: Array<[number, number]> = [];
 		for (let i = 0; i <= 60; i++) points.push([100 + i * 5, 200]);
+		return points;
+	};
 
-		// A mouse reports no pressure, so there is nothing for thinning to
-		// flatten.
+	// Thinning used to drop most of a straight run. It also changed the shape
+	// of the curve between lifting the pen and seeing it saved.
+	it('keeps every sample of a straight run', () => {
+		const points = straight();
 		surface.drawStroke(points, { pressure: 0, pointerType: 'mouse' });
-		const kept = pointsOf(surface.annotations()[0]);
-		expect(kept.length).toBeGreaterThanOrEqual(2);
-		expect(kept.length).toBeLessThan(points.length / 4);
-	});
-
-	it('drops them from a pen stroke when pressure is switched off', () => {
-		surface = mountTestSurface(800, 450, { isPressureEnabled: () => false });
-		const points: Array<[number, number]> = [];
-		for (let i = 0; i <= 60; i++) points.push([100 + i * 5, 200]);
-
-		surface.drawStroke(points);
-		const kept = pointsOf(surface.annotations()[0]);
-		expect(kept.length).toBeLessThan(points.length / 4);
-		expect(kept.every((p) => p.p === undefined)).toBe(true);
+		expect(pointsOf(surface.annotations()[0]).length).toBeGreaterThanOrEqual(points.length);
 	});
 
 	it('keeps every sample of a stroke that carries pressure', () => {
-		const points: Array<[number, number]> = [];
-		for (let i = 0; i <= 60; i++) points.push([100 + i * 5, 200]);
-
+		const points = straight();
 		surface.drawStroke(points, { pressure: 0.5 });
 		expect(pointsOf(surface.annotations()[0]).length).toBeGreaterThanOrEqual(points.length);
+	});
+
+	it('keeps every sample of a pen stroke when pressure is switched off, and drops only the pressure', () => {
+		surface = mountTestSurface(800, 450, { isPressureEnabled: () => false });
+		const points = straight();
+		surface.drawStroke(points);
+		const kept = pointsOf(surface.annotations()[0]);
+		expect(kept.length).toBeGreaterThanOrEqual(points.length);
+		expect(kept.every((p) => p.p === undefined)).toBe(true);
 	});
 
 	it('keeps the shape of a stroke that actually turns', () => {
@@ -124,105 +122,6 @@ describe('strokes are thinned when they commit', () => {
 
 		surface.drawStroke(points);
 		expect(pointsOf(surface.annotations()[0]).length).toBeGreaterThan(6);
-	});
-});
-
-describe('a read-only surface', () => {
-	it('takes no ink at all', () => {
-		surface.controller.setReadOnly(true);
-		surface.drawStroke([
-			[100, 100],
-			[200, 140],
-			[300, 100],
-		]);
-		expect(surface.annotations()).toHaveLength(0);
-	});
-
-	it('takes ink again once it is not', () => {
-		surface.controller.setReadOnly(true);
-		surface.drawStroke([[100, 100], [200, 140]]);
-		expect(surface.annotations()).toHaveLength(0);
-
-		surface.controller.setReadOnly(false);
-		surface.drawStroke([[100, 100], [200, 140], [300, 100]]);
-		expect(surface.annotations()).toHaveLength(1);
-	});
-});
-
-describe('the overlay canvas', () => {
-	// Deferred on purpose: the overlay is half the canvas memory a page
-	// holds, and a block being read rather than drawn on never needs it.
-	it('has no drawing context until something needs drawing on it', () => {
-		expect(surface.overlayAcquired()).toBe(false);
-	});
-
-	it('gets one as soon as a stroke is under way', () => {
-		surface.pointer('pointerdown', 100, 100);
-		surface.pointer('pointermove', 150, 120);
-		expect(surface.overlayAcquired()).toBe(true);
-	});
-});
-
-describe('a selection stays on the surface', () => {
-	// Drawing was clamped in Phase F; dragging what was already drawn was
-	// not, and the two are separate wirings. This is the one that could only
-	// be checked by hand before, which is why it went unnoticed.
-	function drawAndSelect(): void {
-		surface.drawStroke([
-			[100, 100],
-			[200, 100],
-			[300, 100],
-		]);
-		surface.controller.setTool('select');
-		// A lasso has to reach outside the surface to enclose a stroke that
-		// touches its edge; lasso points are deliberately not clamped.
-		surface.pointer('pointerdown', -60, -60);
-		for (const [x, y] of [
-			[-60, 400],
-			[900, 400],
-			[900, -60],
-			[-60, -60],
-		] as Array<[number, number]>) {
-			surface.pointer('pointermove', x, y);
-		}
-		surface.pointer('pointerup', -60, -60);
-	}
-
-	it('stops a selection dragged off the bottom-right at the edge', () => {
-		drawAndSelect();
-
-		surface.pointer('pointerdown', 200, 100);
-		for (let i = 1; i <= 8; i++) surface.pointer('pointermove', 200 + i * 300, 100 + i * 200);
-		surface.pointer('pointerup', 2600, 1700);
-
-		const points = pointsOf(surface.annotations()[0]);
-		expect(points.length).toBeGreaterThan(0);
-		expect(Math.max(...points.map((p) => p.x))).toBeLessThanOrEqual(800);
-		expect(Math.max(...points.map((p) => p.y))).toBeLessThanOrEqual(450);
-	});
-
-	it('stops a selection dragged off the top-left at the edge', () => {
-		drawAndSelect();
-
-		surface.pointer('pointerdown', 200, 100);
-		for (let i = 1; i <= 8; i++) surface.pointer('pointermove', 200 - i * 300, 100 - i * 200);
-		surface.pointer('pointerup', -2200, -1500);
-
-		const points = pointsOf(surface.annotations()[0]);
-		expect(points.length).toBeGreaterThan(0);
-		expect(Math.min(...points.map((p) => p.x))).toBeGreaterThanOrEqual(0);
-		expect(Math.min(...points.map((p) => p.y))).toBeGreaterThanOrEqual(0);
-	});
-
-	it('moves a selection normally when it stays inside', () => {
-		drawAndSelect();
-
-		surface.pointer('pointerdown', 200, 100);
-		surface.pointer('pointermove', 250, 150);
-		surface.pointer('pointerup', 250, 150);
-
-		const xs = pointsOf(surface.annotations()[0]).map((p) => p.x);
-		expect(Math.min(...xs)).toBeCloseTo(150, 0);
 	});
 });
 

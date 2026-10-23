@@ -1,6 +1,4 @@
 import { createId } from '../annotate/id';
-import { SIMPLIFY_EPSILON, simplifyPoints } from '../annotate/simplify';
-import { Annotation } from '../annotate/types';
 import { INK_BLOCK_LANGUAGE, parseInkBlock, serializeInkBlock } from './inkBlockFormat';
 import { isInkFileFence } from './inkFence';
 
@@ -12,8 +10,6 @@ export interface CompactResult {
 	stamped: number;
 	// Blocks deliberately left alone because they could not be fully read.
 	skipped: number;
-	pointsBefore: number;
-	pointsAfter: number;
 }
 
 function isOpeningFence(line: string | undefined): boolean {
@@ -25,34 +21,10 @@ function isClosingFence(line: string | undefined): boolean {
 	return (line?.trimStart() ?? '').startsWith('```');
 }
 
-function countPoints(annotations: Annotation[]): number {
-	let total = 0;
-	for (const annotation of annotations) {
-		if (annotation.kind === 'stroke') total += annotation.points.length;
-	}
-	return total;
-}
-
-function simplifyAnnotations(annotations: Annotation[]): Annotation[] {
-	return annotations.map((annotation) => {
-		if (annotation.kind !== 'stroke') return annotation;
-		const points = simplifyPoints(annotation.points, SIMPLIFY_EPSILON);
-		return points.length === annotation.points.length ? annotation : { ...annotation, points };
-	});
-}
-
-// Rewrites every ink block in a note with its strokes thinned, the way a
-// stroke drawn today is thinned the moment it commits (see
-// annotate/simplify.ts).
-//
-// This exists because that thinning only applies to new ink: a block
-// written before it keeps every sample it captured until something rewrites
-// it, and the notes that most need it are the oldest and densest ones. On a
-// note of fourteen blocks that is most of the file, most of the parse on
-// open, and most of what a live-replicating vault re-uploads on every save.
-//
-// Epsilon is applied in stored units, which is the space it is documented
-// in: half a unit in an 800-wide block is under half a pixel as displayed.
+// Repairs the ink blocks in a note: gives an id to every block that has
+// none, which is what makes it writable again (see below). It used to thin
+// strokes as well, for blocks written before ink was thinned on commit; ink
+// is no longer thinned anywhere, so every sample is kept as it was found.
 //
 // A block that cannot be fully parsed is left exactly as it was, and
 // counted in `skipped`. That is the same rule the save path follows, for
@@ -65,8 +37,6 @@ export function compactInkBlocks(source: string): CompactResult {
 	let blocks = 0;
 	let stamped = 0;
 	let skipped = 0;
-	let pointsBefore = 0;
-	let pointsAfter = 0;
 
 	for (let index = 0; index < lines.length; index++) {
 		const line = lines[index];
@@ -102,29 +72,22 @@ export function compactInkBlocks(source: string): CompactResult {
 			continue;
 		}
 
-		const before = countPoints(data.annotations);
-		const annotations = simplifyAnnotations(data.annotations);
-		const after = countPoints(annotations);
-
 		// A block with no id cannot be told apart from any other block that
 		// has none and no ink in it — they are the same bytes — so a save
 		// could not safely find which fence was its own, and now refuses
 		// rather than guessing (see findUniqueInkBlockByBody). Giving each
-		// one an id is what makes it writable again, and it is why this
-		// command repairs as well as compacts.
+		// one an id is what makes it writable again, which is what this
+		// command is for.
 		const id = data.id ?? createId();
 		const needsId = !data.id;
 		if (needsId) stamped++;
 
-		pointsBefore += before;
-		pointsAfter += after;
-
-		// Nothing to gain here, so nothing is rewritten. Re-serializing
+		// Nothing to repair here, so nothing is rewritten. Re-serializing
 		// anyway would still change the bytes — a parsed annotation comes
 		// back with its keys in the parser's order rather than the order it
 		// was written in — and that would be a no-op edit to every block in
 		// the note, re-uploaded through a replicating vault for no benefit.
-		if (after === before && !needsId) {
+		if (!needsId) {
 			for (let copy = index; copy <= close; copy++) out.push(lines[copy] ?? '');
 			index = close;
 			continue;
@@ -132,10 +95,10 @@ export function compactInkBlocks(source: string): CompactResult {
 
 		blocks++;
 		out.push(line ?? '');
-		out.push(serializeInkBlock({ ...data, id, annotations }));
+		out.push(serializeInkBlock({ ...data, id }));
 		out.push(lines[close] ?? '');
 		index = close;
 	}
 
-	return { content: out.join('\n'), blocks, stamped, skipped, pointsBefore, pointsAfter };
+	return { content: out.join('\n'), blocks, stamped, skipped };
 }
