@@ -1,3 +1,4 @@
+import { getStroke } from 'perfect-freehand';
 import { Point } from './types';
 
 // The shape of a stroke, as geometry, with no renderer in it.
@@ -14,10 +15,23 @@ export type PathSegment =
 	| { kind: 'line'; to: Point }
 	| { kind: 'quad'; control: Point; to: Point };
 
-// How thin the lightest touch draws, as a fraction of the tool's width. Not
-// zero: an outline of no width is an invisible stroke, which reads as ink
-// that failed to record rather than as a light line.
-export const MIN_PRESSURE_SCALE = 0.35;
+// How the filled outline of a pressure stroke is drawn, handed to
+// perfect-freehand. Kept together so the look can be tuned in one place.
+//
+// FREEHAND_SIZE_SCALE sets the library's `size` as a fraction of the tool's
+// width. perfect-freehand draws a stroke at its full `size` at a pressure of
+// 0.5 and thinner below that, and a stylus rests nearer 0.2 in ordinary
+// writing, so a scale below 1 keeps a stroke about as heavy as the tool's
+// width suggests (0.7 gives the same average weight as the outline this
+// replaced, measured on recorded handwriting).
+//
+// Streamline is low on purpose: it pulls each point toward the pen with a
+// lag, which is felt while writing. The pen's own data is clean enough not
+// to need it.
+const FREEHAND_SIZE_SCALE = 0.7;
+const FREEHAND_THINNING = 0.5;
+const FREEHAND_SMOOTHING = 0.5;
+const FREEHAND_STREAMLINE = 0.2;
 
 export function hasPressure(points: Point[]): boolean {
 	return points.some((point) => typeof point.p === 'number' && Number.isFinite(point.p));
@@ -74,55 +88,43 @@ function withoutRepeats(points: Point[]): Point[] {
 	return kept;
 }
 
-function halfWidthAt(point: Point, baseWidth: number): number {
-	// A point with no pressure draws at full width, so a stroke whose device
-	// only sometimes reported pressure doesn't develop a hairline gap
-	// wherever the report went missing.
-	const pressure = typeof point.p === 'number' && Number.isFinite(point.p) ? Math.min(Math.max(point.p, 0), 1) : 1;
-	return (baseWidth * (MIN_PRESSURE_SCALE + (1 - MIN_PRESSURE_SCALE) * pressure)) / 2;
-}
-
 // A closed ring around the stroke, wide where the pen pressed and narrow
-// where it did not — the shape that gets filled, since neither a canvas
-// stroke nor a PDF `S` operator can vary a line's width along its length.
+// where it did not, with round ends — the shape that gets filled, since
+// neither a canvas stroke nor a PDF `S` operator can vary a line's width
+// along its length.
 //
-// The ring runs down one side of the stroke and back up the other, so a
-// sample's two edge points sit at mirrored positions in the array: `index`
-// and `2 * sampleCount - 1 - index`. That is what lets a test measure the
-// width the outline actually has rather than restate the formula.
+// Built by perfect-freehand: it first smooths the samples into a centre
+// line and then offsets that, so a sample that is a little off moves the
+// edge a little instead of throwing a spike. The ring is returned closed,
+// its last point repeating its first.
 export function outlinePath(points: Point[], baseWidth: number): Point[] {
-	const samples = withoutRepeats(points);
-	if (samples.length < 2) return [];
+	if (withoutRepeats(points).length < 2) return [];
 
-	const left: Point[] = [];
-	const right: Point[] = [];
-	let lastNormal: Point | null = null;
+	// A point with no pressure takes the last one the pen reported, so a
+	// stroke whose device only sometimes reported pressure doesn't develop a
+	// hairline gap wherever the report went missing.
+	let lastPressure = 0.5;
+	const input = points.map((point): [number, number, number] => {
+		if (typeof point.p === 'number' && Number.isFinite(point.p)) lastPressure = Math.min(Math.max(point.p, 0), 1);
+		return [point.x, point.y, lastPressure];
+	});
 
-	for (let index = 0; index < samples.length; index++) {
-		const current = samples[index];
-		if (!current) continue;
-		// The direction *through* this sample rather than out of it, so a
-		// corner's offset splits the difference between its two segments
-		// instead of jumping.
-		const before = samples[Math.max(0, index - 1)] ?? current;
-		const after = samples[Math.min(samples.length - 1, index + 1)] ?? current;
-		const dx = after.x - before.x;
-		const dy = after.y - before.y;
-		const length = Math.hypot(dx, dy);
-		// Annotated, because it feeds lastNormal and lastNormal feeds it back:
-		// without this the type is self-referential and inferred as any.
-		const normal: Point | null = length > 0 ? { x: -dy / length, y: dx / length } : lastNormal;
-		if (!normal) continue;
-		lastNormal = normal;
+	const outline = getStroke(input, {
+		size: baseWidth * FREEHAND_SIZE_SCALE,
+		thinning: FREEHAND_THINNING,
+		smoothing: FREEHAND_SMOOTHING,
+		streamline: FREEHAND_STREAMLINE,
+		simulatePressure: false,
+		last: true,
+	});
 
-		const half = halfWidthAt(current, baseWidth);
-		left.push({ x: current.x + normal.x * half, y: current.y + normal.y * half });
-		right.push({ x: current.x - normal.x * half, y: current.y - normal.y * half });
+	const ring: Point[] = [];
+	for (const [x, y] of outline) {
+		if (x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+		ring.push({ x, y });
 	}
-
-	if (left.length < 2) return [];
-	const ring = [...left, ...right.reverse()];
+	if (ring.length < 3) return [];
 	const start = ring[0];
-	if (start) ring.push(start);
+	if (start) ring.push({ x: start.x, y: start.y });
 	return ring;
 }
