@@ -1412,6 +1412,15 @@ export class AnnotationController {
 		this.overlayRedrawPage = null;
 	}
 
+	// Repaints every mounted page, for a change that alters how strokes are
+	// drawn without touching any annotation.
+	redrawInk(): void {
+		for (const pageNumber of this.pages.keys()) {
+			this.redrawBase(pageNumber);
+			this.redrawOverlay(pageNumber);
+		}
+	}
+
 	private redrawAllOverlay(): void {
 		for (const pageNumber of this.pages.keys()) this.redrawOverlay(pageNumber);
 	}

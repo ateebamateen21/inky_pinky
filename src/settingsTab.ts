@@ -74,8 +74,19 @@ export class InklingSettingTab extends PluginSettingTab {
 				heading: 'Pen',
 				items: [
 					{
+						name: 'Ink style',
+						desc: 'Freehand: every pen stroke is shaped by the perfect-freehand library, with variable width and tapered ends (from pressure when the pen reports it, otherwise from how fast you write). Native ink: a plain line of constant width with light smoothing, the form other PDF apps handle best. Both are saved as standard PDF ink; the shape is what differs. Changing it redraws every stroke in this app, while a PDF’s saved appearance changes as its strokes are next written.',
+						aliases: ['freehand', 'perfect freehand', 'native', 'taper', 'width'],
+						control: {
+							type: 'dropdown',
+							key: 'inkStyle',
+							defaultValue: defaults.inkStyle,
+							options: { freehand: 'Freehand', native: 'Native ink' },
+						},
+					},
+					{
 						name: 'Pressure sensitivity',
-						desc: 'Vary a pen stroke’s width with how hard the stylus presses. Has no effect on a mouse.',
+						desc: 'In the Freehand ink style, vary a pen stroke’s width with how hard the stylus presses instead of how fast you write. Has no effect on a mouse, or in the Native ink style.',
 						aliases: ['stylus', 'taper'],
 						control: { type: 'toggle', key: 'pressure', defaultValue: defaults.pressure },
 					},

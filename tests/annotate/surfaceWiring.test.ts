@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
+import { setInkStyle } from '../../src/annotate/stroke';
 import { mountTestSurface, pointsOf, type TestSurface } from '../harness/surface';
 
 // Wiring, not logic. Everything asserted here is already correct as a pure
@@ -9,6 +10,7 @@ import { mountTestSurface, pointsOf, type TestSurface } from '../harness/surface
 let surface: TestSurface;
 
 beforeEach(() => {
+	setInkStyle('freehand');
 	document.body.innerHTML = '';
 	surface = mountTestSurface(800, 450);
 });
@@ -42,7 +44,8 @@ describe('a mounted surface', () => {
 		expect(surface.baseCalls().map((c) => c.op)).toContain('fill');
 	});
 
-	it('strokes a pen that reported no pressure', () => {
+	it('strokes a pen that reported no pressure as a plain line in the native ink style', () => {
+		setInkStyle('native');
 		surface.drawStroke(
 			[
 				[100, 100],
@@ -52,6 +55,19 @@ describe('a mounted surface', () => {
 			{ pressure: 0, pointerType: 'mouse' },
 		);
 		expect(surface.baseCalls().map((c) => c.op)).toContain('stroke');
+	});
+
+	it('fills a pen that reported no pressure in the freehand ink style', () => {
+		setInkStyle('freehand');
+		surface.drawStroke(
+			[
+				[100, 100],
+				[200, 140],
+				[300, 100],
+			],
+			{ pressure: 0, pointerType: 'mouse' },
+		);
+		expect(surface.baseCalls().map((c) => c.op)).toContain('fill');
 	});
 });
 

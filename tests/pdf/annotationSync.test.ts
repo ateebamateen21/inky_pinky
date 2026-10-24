@@ -1,5 +1,6 @@
 import { PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream, PDFRef } from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
+import { setInkStyle } from '../../src/annotate/stroke';
 import { readInklingAnnotations, writeInklingAnnotations } from '../../src/pdf/annotationSync';
 import { recordChanges } from '../../src/pdf/changeSet';
 import type { Annotation } from '../../src/annotate/types';
@@ -303,7 +304,21 @@ describe('highlighter appearance in the file', () => {
 		// `0 J` is butt cap, `1 J` round. A round cap on a text-height bar
 		// bulges half that height past the first and last glyph.
 		expect((await appearanceOf(highlight)).ops).toContain('0 J');
-		expect((await appearanceOf({ ...highlight, id: 'ink-p', tool: 'pen' })).ops).toContain('1 J');
+		// A pen stroke is a stroked line, with a cap, only in the native ink
+		// style; in the freehand style it is a filled outline with no cap.
+		setInkStyle('native');
+		try {
+			expect((await appearanceOf({ ...highlight, id: 'ink-p', tool: 'pen' })).ops).toContain('1 J');
+		} finally {
+			setInkStyle('freehand');
+		}
+	});
+
+	it('fills a pen stroke in the freehand style, with or without pressure', async () => {
+		const plain: Annotation = { ...highlight, id: 'ink-q', tool: 'pen' };
+		const ops = (await appearanceOf(plain)).ops;
+		expect(ops).toMatch(/\bf\b/);
+		expect(ops).not.toContain(' S');
 	});
 
 	it('still round-trips as a highlighter after the opacity changed', async () => {
