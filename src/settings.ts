@@ -54,6 +54,7 @@ export interface InklingSettings {
 	smoothing: boolean;
 	shapeRecognition: ShapeRecognition;
 	inkStyle: InkStyle;
+	inkTaperedEnds: boolean;
 	// A pen's buttons reach the browser under a few fixed names, and which
 	// name a given physical button gets depends on the pen and its driver.
 	// So there is one setting per name rather than per physical button.
@@ -97,6 +98,7 @@ export function defaultSettings(): InklingSettings {
 		smoothing: true,
 		shapeRecognition: 'hold',
 		inkStyle: 'freehand',
+		inkTaperedEnds: false,
 		penButtonBarrel: 'eraser',
 		penButtonMiddle: 'highlighter',
 		penButtonEraser: 'eraser',
@@ -213,6 +215,7 @@ export function normalizeSettings(raw: unknown): InklingSettings {
 		smoothing: bool(source.smoothing, defaults.smoothing),
 		shapeRecognition: pick(source.shapeRecognition, ['off', 'hold'] as const, defaults.shapeRecognition),
 		inkStyle: pick(source.inkStyle, ['freehand', 'native'] as const, defaults.inkStyle),
+		inkTaperedEnds: bool(source.inkTaperedEnds, defaults.inkTaperedEnds),
 		penButtonBarrel: pick(source.penButtonBarrel, PEN_BUTTON_TOOLS, defaults.penButtonBarrel),
 		penButtonMiddle: pick(source.penButtonMiddle, PEN_BUTTON_TOOLS, defaults.penButtonMiddle),
 		penButtonEraser: pick(source.penButtonEraser, PEN_BUTTON_TOOLS, defaults.penButtonEraser),

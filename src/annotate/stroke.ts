@@ -20,7 +20,7 @@ export type PathSegment =
 // this module, can never disagree about it.
 //
 //   freehand: every pen stroke, with or without pressure, is passed through
-//     perfect-freehand and drawn as a filled outline with round, tapered ends.
+//     perfect-freehand and drawn as a filled outline with round ends.
 //   native:   nothing is passed through anything. A pen stroke is a plain
 //     line of constant width with the light smoothing it always had, which is
 //     the form every PDF viewer and editor understands best.
@@ -53,23 +53,41 @@ export function drawsAsOutline(tool: string): boolean {
 	return tool === 'pen' && currentInkStyle === 'freehand';
 }
 
+// Whether a freehand stroke thins to a point at its start and end. Off unless
+// the user turns it on: a tapered end reads as a flourish, and in small
+// handwriting it makes a stroke look like it has serifs.
+let taperedEnds = false;
+
+export function setTaperedEnds(on: boolean): void {
+	if (on === taperedEnds) return;
+	taperedEnds = on;
+	inkStyleRevision++;
+}
+
+export function getTaperedEnds(): boolean {
+	return taperedEnds;
+}
+
 // The two looks of the freehand style, handed to perfect-freehand. Kept
 // together so they can be tuned in one place.
 //
-// With pressure, the pen's own readings are used, bent by PRESSURE_CURVE: a
-// stylus rests nearer 0.2 than 0.5 in ordinary writing, and the library draws
-// a stroke at its full `size` at 0.5, so raising pressure to a power below 1
-// lifts light touches toward the middle without pushing a pen that reports
-// the full 0 to 1 past it. Without pressure, the library infers thickness
-// from writing speed, which is what its own demo does.
+// With pressure, the pen's own readings are used: perfect-freehand draws a
+// stroke at its full `size` at a pressure of 0.5 and thinner below that, and
+// a stylus rests nearer 0.2 in ordinary writing, so the size is a fraction
+// of the tool's width (0.7 keeps a stroke about as heavy as the tool's width
+// suggests, measured on recorded handwriting).
+//
+// Without pressure (the setting is off, or the device has none) the width is
+// even, the width of the tool. Thickness is never guessed from how fast the
+// pen moved.
 //
 // Streamline is low on purpose: it pulls each point toward the pen with a
 // lag that is felt while writing, and the pen's own data is clean enough not
 // to need much.
-const PRESSURE_CURVE = 0.5;
-const FREEHAND_WITH_PRESSURE = { size: 1.0, thinning: 0.7, smoothing: 0.5, streamline: 0.3 };
-const FREEHAND_BY_SPEED = { size: 1.2, thinning: 0.55, smoothing: 0.5, streamline: 0.4 };
-// How far from each end the stroke tapers, in multiples of the tool's width.
+const FREEHAND_WITH_PRESSURE = { size: 0.7, thinning: 0.5, smoothing: 0.5, streamline: 0.2 };
+const FREEHAND_EVEN = { size: 1.0, thinning: 0, smoothing: 0.5, streamline: 0.2 };
+// How far from each end a tapered stroke thins, in multiples of the tool's
+// width.
 const TAPER_START = 3;
 const TAPER_END = 5;
 
@@ -128,9 +146,9 @@ function withoutRepeats(points: Point[]): Point[] {
 	return kept;
 }
 
-// A closed ring around the stroke, wide where the pen pressed (or moved
-// slowly, when it reported no pressure) and narrow where it did not, with
-// round, tapered ends — the shape that gets filled, since neither a canvas
+// A closed ring around the stroke, with round ends: wide where the pen
+// pressed and narrow where it did not when it reported pressure, an even
+// width otherwise. It is the shape that gets filled, since neither a canvas
 // stroke nor a PDF `S` operator can vary a line's width along its length.
 //
 // Built by perfect-freehand: it first smooths the samples into a centre
@@ -149,15 +167,15 @@ export function outlinePath(points: Point[], baseWidth: number): Point[] {
 	}
 
 	const withPressure = hasPressure(points);
-	const look = withPressure ? FREEHAND_WITH_PRESSURE : FREEHAND_BY_SPEED;
+	const look = withPressure ? FREEHAND_WITH_PRESSURE : FREEHAND_EVEN;
 
 	// A point with no pressure takes the last one the pen reported, so a
 	// stroke whose device only sometimes reported pressure doesn't develop a
 	// hairline gap wherever the report went missing.
 	let lastPressure = 0.5;
 	const input = points.map((point): [number, number, number] => {
-		if (typeof point.p === 'number' && Number.isFinite(point.p)) {
-			lastPressure = Math.pow(Math.min(Math.max(point.p, 0), 1), PRESSURE_CURVE);
+		if (withPressure && typeof point.p === 'number' && Number.isFinite(point.p)) {
+			lastPressure = Math.min(Math.max(point.p, 0), 1);
 		}
 		return [point.x, point.y, lastPressure];
 	});
@@ -167,12 +185,12 @@ export function outlinePath(points: Point[], baseWidth: number): Point[] {
 		thinning: look.thinning,
 		smoothing: look.smoothing,
 		streamline: look.streamline,
-		simulatePressure: !withPressure,
+		simulatePressure: false,
 		last: true,
-		// Capped by the stroke's own length, so a short flick or a quick dot
-		// keeps its weight instead of tapering away to a sliver.
-		start: { taper: Math.min(baseWidth * TAPER_START, length * 0.25) },
-		end: { taper: Math.min(baseWidth * TAPER_END, length * 0.35) },
+		// Capped by the stroke's own length, so a short flick keeps its
+		// weight instead of tapering away to a sliver.
+		start: taperedEnds ? { taper: Math.min(baseWidth * TAPER_START, length * 0.25) } : { cap: true },
+		end: taperedEnds ? { taper: Math.min(baseWidth * TAPER_END, length * 0.35) } : { cap: true },
 	});
 
 	const ring: Point[] = [];

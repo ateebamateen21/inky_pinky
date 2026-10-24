@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { drawsAsOutline, getInkStyle, hasPressure, outlinePath, outlineSegments, setInkStyle, smoothedPath } from '../../src/annotate/stroke';
+import { drawsAsOutline, getInkStyle, hasPressure, outlinePath, outlineSegments, setInkStyle, setTaperedEnds, getTaperedEnds, smoothedPath } from '../../src/annotate/stroke';
 import type { Point } from '../../src/annotate/types';
 
 // How far the ring reaches across the stroke, measured over the points whose
@@ -121,20 +121,38 @@ describe('outlinePath', () => {
 		expect(wide).toBeCloseTo(thin * 2, 0);
 	});
 
-	it('tapers toward both ends', () => {
+	it('keeps full width to the very ends by default', () => {
 		const ring = outlinePath(run(80, () => 0.5), 10);
 		const middle = thicknessBetween(ring, 60, 100);
-		expect(thicknessBetween(ring, 0, 3)).toBeLessThan(middle * 0.6);
-		expect(thicknessBetween(ring, 156, 158)).toBeLessThan(middle * 0.6);
+		expect(thicknessBetween(ring, 0, 3)).toBeGreaterThan(middle * 0.6);
+		expect(thicknessBetween(ring, 156, 158)).toBeGreaterThan(middle * 0.6);
 	});
 
-	it('draws a stroke with no pressure too, thicker where the pen went slowly', () => {
+	it('tapers toward both ends when tapered ends are switched on', () => {
+		setTaperedEnds(true);
+		try {
+			expect(getTaperedEnds()).toBe(true);
+			const ring = outlinePath(run(80, () => 0.5), 10);
+			const middle = thicknessBetween(ring, 60, 100);
+			expect(thicknessBetween(ring, 0, 3)).toBeLessThan(middle * 0.6);
+			expect(thicknessBetween(ring, 156, 158)).toBeLessThan(middle * 0.6);
+		} finally {
+			setTaperedEnds(false);
+		}
+	});
+
+	// Thickness is never guessed from speed: without pressure the width is
+	// even, however fast the pen went.
+	it('gives a stroke with no pressure an even width, slow or fast', () => {
 		const slowThenFast: Point[] = [];
 		for (let index = 0; index < 40; index++) slowThenFast.push({ x: index * 1, y: 0 });
 		for (let index = 0; index < 40; index++) slowThenFast.push({ x: 40 + index * 8, y: 0 });
 		const ring = outlinePath(slowThenFast, 10);
 		expect(ring.length).toBeGreaterThan(8);
-		expect(thicknessBetween(ring, 15, 35)).toBeGreaterThan(thicknessBetween(ring, 150, 300));
+		const slow = thicknessBetween(ring, 15, 35);
+		const fast = thicknessBetween(ring, 150, 300);
+		expect(slow).toBeCloseTo(10, 0);
+		expect(fast).toBeCloseTo(10, 0);
 	});
 
 	it('does not leave a gap where the pen stopped reporting pressure', () => {
