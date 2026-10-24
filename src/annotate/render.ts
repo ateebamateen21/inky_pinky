@@ -1,5 +1,5 @@
 import { boundingBox, unionBoundingBox } from './geometry';
-import { hasPressure, outlinePath, smoothedPath } from './stroke';
+import { drawsAsOutline, getInkStyleRevision, outlineSegments, smoothedPath } from './stroke';
 import { Annotation, NOTE_MARKER_SIZE, Point, Rect, StrokeAnnotation } from './types';
 
 const SELECTION_COLOR = '#1971c2';
@@ -54,13 +54,13 @@ const CHROME_DASH = [4, 3];
 
 // Whether this stroke draws as a filled outline rather than a stroked line.
 //
-// A pen that reported pressure is drawn as a tapered outline, since neither
-// a canvas stroke nor a PDF `S` operator can vary a line's width along its
-// length. A highlighter never is — a highlighter that tapered would read as
-// a mistake, and its text-snapped form is a straight segment at line height
-// anyway.
+// In the freehand ink style every pen stroke is a filled outline, since
+// neither a canvas stroke nor a PDF `S` operator can vary a line's width
+// along its length. A highlighter never is — a highlighter that tapered
+// would read as a mistake, and its text-snapped form is a straight segment
+// at line height anyway. See annotate/stroke.ts.
 function isTapered(annotation: StrokeAnnotation): boolean {
-	return annotation.tool === 'pen' && hasPressure(annotation.points);
+	return drawsAsOutline(annotation.tool);
 }
 
 // Builds a stroke's canvas path from the shared path description (see
@@ -71,10 +71,11 @@ function buildStrokePath(annotation: StrokeAnnotation): Path2D {
 	const path = new Path2D();
 
 	if (isTapered(annotation)) {
-		const [first, ...rest] = outlinePath(annotation.points, annotation.width);
-		if (!first || rest.length === 0) return path;
-		path.moveTo(first.x, first.y);
-		for (const point of rest) path.lineTo(point.x, point.y);
+		for (const segment of outlineSegments(annotation.points, annotation.width)) {
+			if (segment.kind === 'move') path.moveTo(segment.to.x, segment.to.y);
+			else if (segment.kind === 'line') path.lineTo(segment.to.x, segment.to.y);
+			else path.quadraticCurveTo(segment.control.x, segment.control.y, segment.to.x, segment.to.y);
+		}
 		path.closePath();
 		return path;
 	}
@@ -99,13 +100,22 @@ function buildStrokePath(annotation: StrokeAnnotation): Path2D {
 // wholesale on every edit rather than mutating them in place (see the note
 // on `unchanged` in annotate/store.ts), so an edited stroke is a new object
 // that simply misses, and the entry for the old one goes when it does.
-const strokePaths = new WeakMap<StrokeAnnotation, Path2D>();
+let strokePaths = new WeakMap<StrokeAnnotation, Path2D>();
+// The ink style the cached paths were built under. A change of style makes
+// every one of them the wrong kind of path, which no edit to an annotation
+// would otherwise signal.
+let strokePathsStyleRevision = getInkStyleRevision();
 
 // `cache` is false for the overlay's draft stroke: `draftFor` in
 // annotate/controller.ts builds a fresh annotation every frame, so caching
 // one would allocate an entry per frame and never once hit.
 function strokePath(annotation: StrokeAnnotation, cache: boolean): Path2D {
 	if (!cache) return buildStrokePath(annotation);
+
+	if (strokePathsStyleRevision !== getInkStyleRevision()) {
+		strokePaths = new WeakMap();
+		strokePathsStyleRevision = getInkStyleRevision();
+	}
 
 	const existing = strokePaths.get(annotation);
 	if (existing) return existing;

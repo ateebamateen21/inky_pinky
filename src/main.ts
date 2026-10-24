@@ -10,6 +10,7 @@ import { registerInkBlock } from './markdown/inkBlock';
 import { inkFilePathFor } from './markdown/inkFilePath';
 import { registerNoteCreation } from './noteCreation';
 import { setAnnotationWriterWorkerSourceProvider } from './pdf/annotationWriterClient';
+import { getInkStyle, setInkStyle } from './annotate/stroke';
 import { CORE_PDF_VIEW_TYPE, PdfAnnotateView, VIEW_TYPE_PDF } from './pdfView';
 import { defaultSettings, normalizeSettings, type InklingSettings } from './settings';
 import { InklingSettingTab } from './settingsTab';
@@ -63,6 +64,7 @@ export default class InklingPlugin extends Plugin {
 		// settings exist — it is shared with surfaces that have no
 		// settings tab behind them.
 		this.toolState.setToolbarCollapsed(this.settings.toolbarStartsCollapsed);
+		setInkStyle(this.settings.inkStyle);
 
 		this.configurePdfWorker();
 		this.configureAnnotationWriterWorker();
@@ -212,6 +214,14 @@ export default class InklingPlugin extends Plugin {
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
+		// The ink style is read by the renderers rather than passed to them,
+		// so a change has to be set here and every open PDF told to redraw.
+		if (this.settings.inkStyle !== getInkStyle()) {
+			setInkStyle(this.settings.inkStyle);
+			for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_PDF)) {
+				if (leaf.view instanceof PdfAnnotateView) leaf.view.redrawInk();
+			}
+		}
 	}
 
 	// Runs `act` on the active annotate view, or reports that there is none.

@@ -15,23 +15,63 @@ export type PathSegment =
 	| { kind: 'line'; to: Point }
 	| { kind: 'quad'; control: Point; to: Point };
 
-// How the filled outline of a pressure stroke is drawn, handed to
-// perfect-freehand. Kept together so the look can be tuned in one place.
+// How a pen stroke is shaped. A plugin-wide choice (Settings, Pen), held here
+// so the canvas and the PDF writer, which both build a stroke's shape from
+// this module, can never disagree about it.
 //
-// FREEHAND_SIZE_SCALE sets the library's `size` as a fraction of the tool's
-// width. perfect-freehand draws a stroke at its full `size` at a pressure of
-// 0.5 and thinner below that, and a stylus rests nearer 0.2 in ordinary
-// writing, so a scale below 1 keeps a stroke about as heavy as the tool's
-// width suggests (0.7 gives the same average weight as the outline this
-// replaced, measured on recorded handwriting).
+//   freehand: every pen stroke, with or without pressure, is passed through
+//     perfect-freehand and drawn as a filled outline with round, tapered ends.
+//   native:   nothing is passed through anything. A pen stroke is a plain
+//     line of constant width with the light smoothing it always had, which is
+//     the form every PDF viewer and editor understands best.
+//
+// Highlighters are not affected: a highlighter that tapered would read as a
+// mistake.
+export type InkStyle = 'freehand' | 'native';
+
+let currentInkStyle: InkStyle = 'freehand';
+let inkStyleRevision = 0;
+
+export function setInkStyle(style: InkStyle): void {
+	if (style === currentInkStyle) return;
+	currentInkStyle = style;
+	inkStyleRevision++;
+}
+
+export function getInkStyle(): InkStyle {
+	return currentInkStyle;
+}
+
+// Bumped whenever the style changes, so anything that keeps built paths can
+// tell they are now of the wrong kind.
+export function getInkStyleRevision(): number {
+	return inkStyleRevision;
+}
+
+// Whether a stroke is drawn as a filled outline rather than a stroked line.
+export function drawsAsOutline(tool: string): boolean {
+	return tool === 'pen' && currentInkStyle === 'freehand';
+}
+
+// The two looks of the freehand style, handed to perfect-freehand. Kept
+// together so they can be tuned in one place.
+//
+// With pressure, the pen's own readings are used, bent by PRESSURE_CURVE: a
+// stylus rests nearer 0.2 than 0.5 in ordinary writing, and the library draws
+// a stroke at its full `size` at 0.5, so raising pressure to a power below 1
+// lifts light touches toward the middle without pushing a pen that reports
+// the full 0 to 1 past it. Without pressure, the library infers thickness
+// from writing speed, which is what its own demo does.
 //
 // Streamline is low on purpose: it pulls each point toward the pen with a
-// lag, which is felt while writing. The pen's own data is clean enough not
-// to need it.
-const FREEHAND_SIZE_SCALE = 0.7;
-const FREEHAND_THINNING = 0.5;
-const FREEHAND_SMOOTHING = 0.5;
-const FREEHAND_STREAMLINE = 0.2;
+// lag that is felt while writing, and the pen's own data is clean enough not
+// to need much.
+const PRESSURE_CURVE = 0.5;
+const FREEHAND_WITH_PRESSURE = { size: 1.0, thinning: 0.7, smoothing: 0.5, streamline: 0.3 };
+const FREEHAND_BY_SPEED = { size: 1.2, thinning: 0.55, smoothing: 0.5, streamline: 0.4 };
+// How far from each end the stroke tapers, in multiples of the tool's width.
+const TAPER_START = 3;
+const TAPER_END = 5;
 
 export function hasPressure(points: Point[]): boolean {
 	return points.some((point) => typeof point.p === 'number' && Number.isFinite(point.p));
@@ -88,34 +128,51 @@ function withoutRepeats(points: Point[]): Point[] {
 	return kept;
 }
 
-// A closed ring around the stroke, wide where the pen pressed and narrow
-// where it did not, with round ends — the shape that gets filled, since
-// neither a canvas stroke nor a PDF `S` operator can vary a line's width
-// along its length.
+// A closed ring around the stroke, wide where the pen pressed (or moved
+// slowly, when it reported no pressure) and narrow where it did not, with
+// round, tapered ends — the shape that gets filled, since neither a canvas
+// stroke nor a PDF `S` operator can vary a line's width along its length.
 //
 // Built by perfect-freehand: it first smooths the samples into a centre
 // line and then offsets that, so a sample that is a little off moves the
 // edge a little instead of throwing a spike. The ring is returned closed,
 // its last point repeating its first.
 export function outlinePath(points: Point[], baseWidth: number): Point[] {
-	if (withoutRepeats(points).length < 2) return [];
+	// A tap is a dot, not nothing.
+	if (withoutRepeats(points).length < 2) return dotRing(points[0], baseWidth);
+
+	let length = 0;
+	for (let index = 1; index < points.length; index++) {
+		const a = points[index - 1];
+		const b = points[index];
+		if (a && b) length += Math.hypot(b.x - a.x, b.y - a.y);
+	}
+
+	const withPressure = hasPressure(points);
+	const look = withPressure ? FREEHAND_WITH_PRESSURE : FREEHAND_BY_SPEED;
 
 	// A point with no pressure takes the last one the pen reported, so a
 	// stroke whose device only sometimes reported pressure doesn't develop a
 	// hairline gap wherever the report went missing.
 	let lastPressure = 0.5;
 	const input = points.map((point): [number, number, number] => {
-		if (typeof point.p === 'number' && Number.isFinite(point.p)) lastPressure = Math.min(Math.max(point.p, 0), 1);
+		if (typeof point.p === 'number' && Number.isFinite(point.p)) {
+			lastPressure = Math.pow(Math.min(Math.max(point.p, 0), 1), PRESSURE_CURVE);
+		}
 		return [point.x, point.y, lastPressure];
 	});
 
 	const outline = getStroke(input, {
-		size: baseWidth * FREEHAND_SIZE_SCALE,
-		thinning: FREEHAND_THINNING,
-		smoothing: FREEHAND_SMOOTHING,
-		streamline: FREEHAND_STREAMLINE,
-		simulatePressure: false,
+		size: baseWidth * look.size,
+		thinning: look.thinning,
+		smoothing: look.smoothing,
+		streamline: look.streamline,
+		simulatePressure: !withPressure,
 		last: true,
+		// Capped by the stroke's own length, so a short flick or a quick dot
+		// keeps its weight instead of tapering away to a sliver.
+		start: { taper: Math.min(baseWidth * TAPER_START, length * 0.25) },
+		end: { taper: Math.min(baseWidth * TAPER_END, length * 0.35) },
 	});
 
 	const ring: Point[] = [];
@@ -123,8 +180,55 @@ export function outlinePath(points: Point[], baseWidth: number): Point[] {
 		if (x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y)) continue;
 		ring.push({ x, y });
 	}
-	if (ring.length < 3) return [];
+	if (ring.length < 3) return dotRing(points[0], baseWidth);
 	const start = ring[0];
 	if (start) ring.push({ x: start.x, y: start.y });
 	return ring;
+}
+
+// A small round ring for a stroke too short to have a direction.
+function dotRing(at: Point | undefined, baseWidth: number): Point[] {
+	if (!at) return [];
+	const steps = 16;
+	const radius = baseWidth / 2;
+	const ring: Point[] = [];
+	for (let step = 0; step < steps; step++) {
+		const angle = (step / steps) * Math.PI * 2;
+		ring.push({ x: at.x + Math.cos(angle) * radius, y: at.y + Math.sin(angle) * radius });
+	}
+	const start = ring[0];
+	if (start) ring.push({ x: start.x, y: start.y });
+	return ring;
+}
+
+// The outline as path segments, drawn with a quadratic curve through the
+// midpoints of the ring rather than straight edges between its points. Straight
+// edges leave the outline visibly faceted when zoomed in; perfect-freehand's
+// own advice is to draw its outline this way. Closed: it ends where it began,
+// and callers close the path as well.
+//
+// This is the shape both the canvas and the PDF writer use for a filled
+// stroke, so neither computes it.
+export function outlineSegments(points: Point[], baseWidth: number): PathSegment[] {
+	const ring = outlinePath(points, baseWidth);
+	// The ring repeats its first point at the end; the curve below closes
+	// itself, so that copy is dropped.
+	const corners = ring.slice(0, -1);
+	const count = corners.length;
+	if (count < 3) return [];
+
+	const midpoint = (a: Point, b: Point): Point => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+	const first = corners[0];
+	const second = corners[1];
+	if (!first || !second) return [];
+
+	const start = midpoint(first, second);
+	const segments: PathSegment[] = [{ kind: 'move', to: start }];
+	for (let index = 1; index <= count; index++) {
+		const control = corners[index % count];
+		const next = corners[(index + 1) % count];
+		if (!control || !next) continue;
+		segments.push({ kind: 'quad', control, to: midpoint(control, next) });
+	}
+	return segments;
 }

@@ -1,9 +1,9 @@
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFObject, PDFPage, PDFRef, PDFStream, PDFString } from 'pdf-lib';
 import { boundingBox } from '../annotate/geometry';
-import { hasPressure, outlinePath, smoothedPath } from '../annotate/stroke';
+import { drawsAsOutline, hasPressure, outlineSegments, smoothedPath } from '../annotate/stroke';
 import { ID_PREFIX, INKLING_EXTRAS, PRESSURE_KEY, QUOTE_KEY } from './annotationFormat';
 import type { TouchFn } from './changeSet';
-import { arrowHeadOps, ellipseOps, moveLineOps, noteMarkerOps, pathOps, polygonOps, rectangleOps } from './contentStream';
+import { arrowHeadOps, ellipseOps, moveLineOps, noteMarkerOps, pathOps, rectangleOps } from './contentStream';
 import {
 	Annotation,
 	DEFAULT_COLOR,
@@ -193,12 +193,13 @@ function writeStroke(pdfDoc: PDFDocument, page: PDFPage, stroke: StrokeAnnotatio
 	// never carries pressure — recording any for one would be dead weight in
 	// every file that has one.
 	const varying = stroke.tool === 'pen' && hasPressure(stroke.points);
-	// Filled outline for a pressure stroke, stroked path for everything else:
-	// no PDF stroking operator can vary a line's width along its length.
-	// Either way the geometry comes from the same shared module the canvas
-	// draws from, so the file matches what the user watched themselves draw.
-	const content = varying
-		? [...fillHeader(stroke.color), polygonOps(outlinePath(stroke.points, stroke.width)), 'f'].join('\n')
+	// Filled outline for a freehand pen stroke, stroked path for everything
+	// else: no PDF stroking operator can vary a line's width along its
+	// length. Either way the geometry comes from the same shared module the
+	// canvas draws from, so the file matches what the user watched
+	// themselves draw.
+	const content = drawsAsOutline(stroke.tool)
+		? [...fillHeader(stroke.color), pathOps(outlineSegments(stroke.points, stroke.width)), 'h', 'f'].join('\n')
 		: [...strokeHeader(stroke.color, stroke.width, isHighlight), pathOps(smoothedPath(stroke.points)), 'S'].join('\n');
 	const apRef = buildAppearanceStream(pdfDoc, bbox, content, opacity, isHighlight ? 'Multiply' : undefined);
 

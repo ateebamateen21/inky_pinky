@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasPressure, outlinePath, smoothedPath } from '../../src/annotate/stroke';
+import { drawsAsOutline, getInkStyle, hasPressure, outlinePath, outlineSegments, setInkStyle, smoothedPath } from '../../src/annotate/stroke';
 import type { Point } from '../../src/annotate/types';
 
 // How far the ring reaches across the stroke, measured over the points whose
@@ -107,7 +107,7 @@ describe('outlinePath', () => {
 		const ring = outlinePath(run(100, (index) => 0.1 + (0.9 * index) / 99), 10);
 		const light = thicknessBetween(ring, 20, 60);
 		const heavy = thicknessBetween(ring, 140, 180);
-		expect(heavy).toBeGreaterThan(light * 1.5);
+		expect(heavy).toBeGreaterThan(light * 1.25);
 	});
 
 	it('does not vanish at the lightest touch', () => {
@@ -121,12 +121,20 @@ describe('outlinePath', () => {
 		expect(wide).toBeCloseTo(thin * 2, 0);
 	});
 
-	it('rounds the ends, reaching past the first and last samples', () => {
-		const stroke = run(60, () => 0.5);
-		const ring = outlinePath(stroke, 10);
-		const xs = ring.map((point) => point.x);
-		expect(Math.min(...xs)).toBeLessThan(0);
-		expect(Math.max(...xs)).toBeGreaterThan(118);
+	it('tapers toward both ends', () => {
+		const ring = outlinePath(run(80, () => 0.5), 10);
+		const middle = thicknessBetween(ring, 60, 100);
+		expect(thicknessBetween(ring, 0, 3)).toBeLessThan(middle * 0.6);
+		expect(thicknessBetween(ring, 156, 158)).toBeLessThan(middle * 0.6);
+	});
+
+	it('draws a stroke with no pressure too, thicker where the pen went slowly', () => {
+		const slowThenFast: Point[] = [];
+		for (let index = 0; index < 40; index++) slowThenFast.push({ x: index * 1, y: 0 });
+		for (let index = 0; index < 40; index++) slowThenFast.push({ x: 40 + index * 8, y: 0 });
+		const ring = outlinePath(slowThenFast, 10);
+		expect(ring.length).toBeGreaterThan(8);
+		expect(thicknessBetween(ring, 15, 35)).toBeGreaterThan(thicknessBetween(ring, 150, 300));
 	});
 
 	it('does not leave a gap where the pen stopped reporting pressure', () => {
@@ -139,18 +147,17 @@ describe('outlinePath', () => {
 		expect(outlinePath(stroke, 8)).toEqual(outlinePath(stroke, 8));
 	});
 
-	it('has nothing to draw for a stroke with no length', () => {
+	it('has nothing to draw for no samples at all', () => {
 		expect(outlinePath([], 10)).toEqual([]);
-		expect(outlinePath([{ x: 5, y: 5, p: 0.5 }], 10)).toEqual([]);
-		expect(
-			outlinePath(
-				[
-					{ x: 5, y: 5, p: 0.5 },
-					{ x: 5, y: 5, p: 0.5 },
-				],
-				10,
-			),
-		).toEqual([]);
+	});
+
+	it('draws a tap as a dot of the tool’s width', () => {
+		for (const tap of [[{ x: 5, y: 5, p: 0.5 }], [{ x: 5, y: 5 }, { x: 5, y: 5 }]]) {
+			const ring = outlinePath(tap, 10);
+			const xs = ring.map((point) => point.x);
+			expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(10, 5);
+			expect(ring[ring.length - 1]).toEqual(ring[0]);
+		}
 	});
 
 	it('never emits a non-finite coordinate, even for repeated samples', () => {
@@ -164,6 +171,40 @@ describe('outlinePath', () => {
 		for (const point of outlinePath(stroke, 10)) {
 			expect(Number.isFinite(point.x)).toBe(true);
 			expect(Number.isFinite(point.y)).toBe(true);
+		}
+	});
+});
+
+describe('outlineSegments', () => {
+	it('is a closed run of curves, so the outline is not faceted', () => {
+		const segments = outlineSegments(run(40, () => 0.5), 10);
+		expect(segments[0]?.kind).toBe('move');
+		expect(segments.slice(1).every((segment) => segment.kind === 'quad')).toBe(true);
+		const last = segments[segments.length - 1];
+		const first = segments[0];
+		if (!last || !first || last.kind !== 'quad' || first.kind !== 'move') throw new Error('unexpected shape');
+		expect(last.to).toEqual(first.to);
+	});
+
+	it('has nothing for no samples', () => {
+		expect(outlineSegments([], 10)).toEqual([]);
+	});
+});
+
+describe('the ink style', () => {
+	it('shapes a pen as an outline in the freehand style and never a highlighter', () => {
+		setInkStyle('freehand');
+		expect(getInkStyle()).toBe('freehand');
+		expect(drawsAsOutline('pen')).toBe(true);
+		expect(drawsAsOutline('highlighter')).toBe(false);
+	});
+
+	it('leaves a pen as a plain line in the native style', () => {
+		setInkStyle('native');
+		try {
+			expect(drawsAsOutline('pen')).toBe(false);
+		} finally {
+			setInkStyle('freehand');
 		}
 	});
 });

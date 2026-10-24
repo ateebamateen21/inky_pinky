@@ -471,6 +471,11 @@ export class PdfAnnotateView extends FileView {
 		await this.flushAnnotationsIfDirty(this.currentFile);
 	}
 
+	// Redraws every stroke, after the ink style changed under it.
+	redrawInk(): void {
+		this.controller.redrawInk();
+	}
+
 	undoAnnotation(): void {
 		if (this.controller.isReadOnly()) return;
 		this.controller.undo();
