@@ -122,6 +122,37 @@ function horizontalSlot(beside: Cell, side: 'left' | 'right'): { col: number; ou
 	return { col: beside.col, outward: 1 };
 }
 
+// Makes room beside `beside` on `side` and returns the cell a page dropped
+// there takes. Pages in the way are shifted in `cells` (the page being placed
+// must already be out of `cells`, as null). Shared by moving a page that
+// exists and by adding one that does not exist yet.
+function placeBeside(cells: (Cell | null)[], beside: number, side: Side): Cell {
+	const anchor = cells[beside - 1]!;
+
+	if (side === 'left' || side === 'right') {
+		const slot = horizontalSlot(anchor, side);
+		const taken = cells.some((cell) => cell && cell.row === anchor.row && cell.col === slot.col);
+		if (taken) {
+			for (const cell of cells) {
+				if (cell && cell.row === anchor.row && (cell.col - slot.col) * slot.outward >= 0) cell.col += slot.outward;
+			}
+		}
+		return { row: anchor.row, col: slot.col };
+	}
+
+	// A new row, in the same column as the page it is beside. Rows only
+	// ever make room downwards: "above" takes the anchor's own row and
+	// pushes it and everything below it down one.
+	const row = side === 'above' ? anchor.row : anchor.row + 1;
+	const taken = cells.some((cell) => cell && cell.row === row);
+	if (taken) {
+		for (const cell of cells) {
+			if (cell && cell.row >= row) cell.row += 1;
+		}
+	}
+	return { row, col: anchor.col };
+}
+
 // Moves `page` so it sits on `side` of `beside`. Returns a new layout and
 // leaves the one it was given untouched. Asking for a page that does not
 // exist, or to put a page beside itself, changes nothing.
@@ -133,33 +164,37 @@ export function movePage(layout: PageLayout, page: number, side: Side, beside: n
 	const cells: (Cell | null)[] = layout.cells.map((cell, index) => (index === page - 1 ? null : { ...cell }));
 	closeUp(cells, layout.cells[page - 1]!);
 
-	// Read after closing up, because closing up can have moved it.
-	const anchor = cells[beside - 1]!;
-	let target: Cell;
+	// Read after closing up inside placeBeside, because closing up can have
+	// moved the page it is beside.
+	cells[page - 1] = placeBeside(cells, beside, side);
+	return { cells: cells as Cell[] };
+}
 
-	if (side === 'left' || side === 'right') {
-		const slot = horizontalSlot(anchor, side);
-		const taken = cells.some((cell) => cell && cell.row === anchor.row && cell.col === slot.col);
-		if (taken) {
-			for (const cell of cells) {
-				if (cell && cell.row === anchor.row && (cell.col - slot.col) * slot.outward >= 0) cell.col += slot.outward;
-			}
-		}
-		target = { row: anchor.row, col: slot.col };
+// ---- Adding a page ----------------------------------------------------
+//
+// Adding a page to the PDF gives it a real page number, and every page from
+// that number on is pushed one later. The layout has to follow: each old
+// page keeps its cell under its new number, and the new page is placed the
+// same way a moved page is, so a page that has just been created can go
+// anywhere an existing one can.
+
+// `newPage` is the number the new page has in the PDF once it is added (1 to
+// one more than the current page count). `beside` is the page it goes beside,
+// by the number that page had *before* the new page existed, since that is
+// the number the person picked it by. If `beside` is not a page, the new page
+// goes on a new row at the bottom instead.
+export function insertPage(layout: PageLayout, newPage: number, side: Side, beside: number): PageLayout {
+	const count = layout.cells.length;
+	if (!Number.isInteger(newPage) || newPage < 1 || newPage > count + 1) return layout;
+
+	const cells: (Cell | null)[] = layout.cells.map((cell) => ({ ...cell }));
+	cells.splice(newPage - 1, 0, null);
+
+	if (!isPage(layout, beside)) {
+		const bottom = layout.cells.reduce((lowest, cell) => Math.max(lowest, cell.row), -1);
+		cells[newPage - 1] = { row: bottom + 1, col: 0 };
 	} else {
-		// A new row, in the same column as the page it is beside. Rows only
-		// ever make room downwards: "above" takes the anchor's own row and
-		// pushes it and everything below it down one.
-		const row = side === 'above' ? anchor.row : anchor.row + 1;
-		const taken = cells.some((cell) => cell && cell.row === row);
-		if (taken) {
-			for (const cell of cells) {
-				if (cell && cell.row >= row) cell.row += 1;
-			}
-		}
-		target = { row, col: anchor.col };
+		cells[newPage - 1] = placeBeside(cells, beside < newPage ? beside : beside + 1, side);
 	}
-
-	cells[page - 1] = target;
 	return { cells: cells as Cell[] };
 }
