@@ -14,6 +14,7 @@ import { BASELINE_DESCENT_RATIO, groupIntoLines, highlightBarHeight, quoteBetwee
 import { RENDER_SCALE, baseRenderScale, layoutRenderScale, zoomedRenderScale } from './pdf/renderScale';
 import { maxWriteIntervalMs } from './pdf/saveCadence';
 import { placeWithin } from './pdf/popoverPlacement';
+import { FileMemoryStore } from './fileMemory';
 import { defaultSettings, type InklingSettings } from './settings';
 import { applyTemplate, insertPageLike, pageSizeFor } from './templates';
 import { enterFullscreen, exitFullscreen } from './pdfFullscreen';
@@ -412,9 +413,26 @@ export class PdfAnnotateView extends FileView {
 	// is open takes effect on the next stroke instead of the next reopen.
 	private readonly getSettings: () => InklingSettings;
 
-	constructor(leaf: WorkspaceLeaf, toolState: ToolState, getSettings: () => InklingSettings = defaultSettings) {
+	// What the plugin remembers about each PDF, here the page a file was left
+	// on. A getter for the same reason as the settings: the plugin swaps in the
+	// loaded store once its data has been read.
+	private readonly getFileMemory: () => FileMemoryStore;
+	// Whether the page the reader is on is being written to that memory. Off
+	// from the moment a file starts loading until it has been scrolled to the
+	// page it opens on, so the first moments of a load, when the view still
+	// reads as page 1, cannot overwrite where the reader had got to.
+	private rememberingPage = false;
+
+	constructor(
+		leaf: WorkspaceLeaf,
+		toolState: ToolState,
+		getSettings: () => InklingSettings = defaultSettings,
+		getFileMemory?: () => FileMemoryStore,
+	) {
 		super(leaf);
 		this.getSettings = getSettings;
+		const standIn = new FileMemoryStore();
+		this.getFileMemory = getFileMemory ?? (() => standIn);
 		this.controller = new AnnotationController({
 			// Shared with every other annotating surface, so the pen you set
 			// up in a note is the pen you get in a PDF (see annotate/toolState).
@@ -914,10 +932,22 @@ export class PdfAnnotateView extends FileView {
 		// Covers setEphemeralState firing *before* this — its own immediate
 		// scrollToPage call would have found no placeholders yet at that
 		// point, since this is what creates them.
+		this.scrollToOpeningPage(file, pdf.numPages);
+	}
+
+	// Where a file opens. A page it was asked for wins (a link with #page=, or
+	// the core PDF view handing over where it was); failing that, the page the
+	// reader last left it on; failing that, the top. Remembering the page
+	// starts here, once the file has been scrolled to where it is opening.
+	private scrollToOpeningPage(file: TFile, pageCount: number): void {
 		if (this.pendingScrollToPage != null) {
 			this.scrollToPage(this.pendingScrollToPage);
 			this.pendingScrollToPage = null;
+		} else {
+			const remembered = this.getFileMemory().getLastPage(file.path, pageCount);
+			if (remembered !== null) this.scrollToPage(remembered);
 		}
+		this.rememberingPage = true;
 	}
 
 	async onUnloadFile(): Promise<void> {
@@ -1113,6 +1143,7 @@ export class PdfAnnotateView extends FileView {
 		this.upgradingPages.clear();
 		this.textLines.clear();
 		this.pendingScrollToPage = null;
+		this.rememberingPage = false;
 		// Bumped so an in-flight document search stops walking a file that
 		// is no longer open.
 		this.findToken++;
@@ -1206,7 +1237,17 @@ export class PdfAnnotateView extends FileView {
 		// The toolbar's readouts are the only thing watching this, and
 		// scrolling isn't something the controller can observe for itself —
 		// so tell it, but only on an actual change.
-		if (this.currentPageNumber !== previousPageNumber) this.controller.refreshUi();
+		if (this.currentPageNumber !== previousPageNumber) {
+			this.controller.refreshUi();
+			this.rememberCurrentPage();
+		}
+	}
+
+	// Written to the store on every change of page; the plugin waits for a
+	// pause in them before it writes to disk, so scrolling is one save.
+	private rememberCurrentPage(): void {
+		if (!this.rememberingPage || !this.currentFile) return;
+		this.getFileMemory().setLastPage(this.currentFile.path, this.currentPageNumber);
 	}
 
 	// Tears scrolled-far-away pages back down to bare placeholders — see

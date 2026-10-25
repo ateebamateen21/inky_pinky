@@ -2,6 +2,7 @@ import { vi } from 'vitest';
 import { TFile } from './obsidian';
 import { installSurfaceStubs, makePointerEvent } from './surface';
 import { ToolState, type Annotation } from '../../src/annotate';
+import type { FileMemoryStore } from '../../src/fileMemory';
 import { PdfAnnotateView } from '../../src/pdfView';
 
 // A PDF view with a file "open", built without a worker or pdf.js: the state
@@ -37,7 +38,7 @@ export function fakeViewport(scale: number) {
 	};
 }
 
-export function openPdfView(options: { toolState?: ToolState; writeDone?: () => Promise<void> } = {}) {
+export function openPdfView(options: { toolState?: ToolState; writeDone?: () => Promise<void>; fileMemory?: FileMemoryStore } = {}) {
 	const writes: WrittenPage[][] = [];
 	let terminated = false;
 	const writer = {
@@ -59,7 +60,8 @@ export function openPdfView(options: { toolState?: ToolState; writeDone?: () => 
 		adapter: { stat: vi.fn(async () => ({ size: 400 })) },
 	};
 	const leaf = { app: { vault, workspace: { on: () => ({}) } } };
-	const view = new PdfAnnotateView(leaf as never, options.toolState ?? new ToolState());
+	const memory = options.fileMemory;
+	const view = new PdfAnnotateView(leaf as never, options.toolState ?? new ToolState(), undefined, memory ? () => memory : undefined);
 	const file = new TFile('Notes/Handwritten.pdf');
 
 	const internals = view as unknown as {
@@ -81,6 +83,8 @@ export function openPdfView(options: { toolState?: ToolState; writeDone?: () => 
 			getCurrentPageNumber(): number;
 		};
 		markPageDirty(page: number): void;
+		pendingScrollToPage: number | null;
+		scrollToOpeningPage(file: TFile, pageCount: number): void;
 	};
 	internals.file = file;
 	internals.currentFile = file;
@@ -88,6 +92,7 @@ export function openPdfView(options: { toolState?: ToolState; writeDone?: () => 
 
 	return {
 		view,
+		path: file.path,
 		writes,
 		isTerminated: () => terminated,
 		// View.close is not in the public typings, but it is what the
@@ -95,6 +100,13 @@ export function openPdfView(options: { toolState?: ToolState; writeDone?: () => 
 		close: () => internals.close(),
 		// What the workspace does when the leaf first shows this view.
 		open: () => internals.open(),
+		// What the end of onLoadFile does once the page placeholders exist:
+		// scroll to the page the file opens on, and start remembering the page.
+		scrollToOpeningPage: (pageCount: number) => internals.scrollToOpeningPage(file, pageCount),
+		// A page asked for by a link or the core view, before the file loaded.
+		askForPage: (page: number) => {
+			internals.pendingScrollToPage = page;
+		},
 		// A page as renderPage leaves it: a viewport, and the file's saved
 		// annotations for it (given here in canvas space) in the store.
 		showPage(pageNumber: number, scale: number, annotations: Annotation[] = []) {
