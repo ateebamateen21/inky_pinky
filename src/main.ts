@@ -94,7 +94,7 @@ export default class InklingPlugin extends Plugin {
 		this.configurePdfWorker();
 		this.configureAnnotationWriterWorker();
 
-		this.registerView(VIEW_TYPE_PDF, (leaf) => new PdfAnnotateView(leaf, this.toolState, () => this.settings));
+		this.registerView(VIEW_TYPE_PDF, (leaf) => new PdfAnnotateView(leaf, this.toolState, () => this.settings, () => this.fileMemory));
 		registerNoteCreation(this, () => ({ template: this.settings.defaultTemplate, pageSize: this.settings.pageSize }));
 		registerInkBlock(this, this.toolState, {
 			captionsEnabled: () => this.settings.blockCaptions,
