@@ -12,6 +12,8 @@ import { registerNoteCreation } from './noteCreation';
 import { setAnnotationWriterWorkerSourceProvider } from './pdf/annotationWriterClient';
 import { getInkStyle, getTaperedEnds, setInkStyle, setTaperedEnds } from './annotate/stroke';
 import { CORE_PDF_VIEW_TYPE, PdfAnnotateView, VIEW_TYPE_PDF } from './pdfView';
+import { DeferredSave } from './deferredSave';
+import { FileMemoryStore } from './fileMemory';
 import { defaultSettings, normalizeSettings, type InklingSettings } from './settings';
 import { InklingSettingTab } from './settingsTab';
 
@@ -56,9 +58,31 @@ export default class InklingPlugin extends Plugin {
 	// file. Initialised to the defaults so nothing has to cope with it
 	// being absent during the async load below.
 	settings: InklingSettings = defaultSettings();
+	// What the plugin remembers about each PDF (its 2D layout and the page it
+	// was left on), kept in data.json beside the settings under its own key
+	// and never inside the PDF. Empty until onload has read the file, the
+	// same way `settings` starts as the defaults.
+	fileMemory = new FileMemoryStore();
+	// Saves the file memory a moment after it last changed, so a burst of
+	// changes is one write. A trailing wait only: the memory changes rarely
+	// and only ever in small steps, so nothing needs a ceiling like the ink's.
+	private readonly memorySave = new DeferredSave(
+		() => this.persist().catch((error) => console.error('Inkling: could not save what it remembers about PDFs.', error)),
+		1000,
+	);
 
 	async onload() {
-		this.settings = normalizeSettings(await this.loadData());
+		const raw: unknown = await this.loadData();
+		this.settings = normalizeSettings(raw);
+		this.fileMemory = new FileMemoryStore(
+			typeof raw === 'object' && raw !== null && 'fileMemory' in raw ? raw.fileMemory : undefined,
+			() => this.memorySave.request(),
+		);
+		// What is remembered is tied to a file's path, so it has to follow the
+		// file when it is renamed or moved and be dropped when it is deleted.
+		// Both cover a whole folder too.
+		this.registerEvent(this.app.vault.on('rename', (file, oldPath) => this.fileMemory.rename(oldPath, file.path)));
+		this.registerEvent(this.app.vault.on('delete', (file) => this.fileMemory.remove(file.path)));
 		this.addSettingTab(new InklingSettingTab(this.app, this));
 		// Applied here rather than inside ToolState, which has no idea
 		// settings exist — it is shared with surfaces that have no
@@ -213,8 +237,14 @@ export default class InklingPlugin extends Plugin {
 		}
 	}
 
+	// Both live in the one data.json, so every write has to carry both or the
+	// one left out would be wiped.
+	private async persist(): Promise<void> {
+		await this.saveData({ ...this.settings, fileMemory: this.fileMemory.toJSON() });
+	}
+
 	async saveSettings(): Promise<void> {
-		await this.saveData(this.settings);
+		await this.persist();
 		// The ink style is read by the renderers rather than passed to them,
 		// so a change has to be set here and every open PDF told to redraw.
 		if (this.settings.inkStyle !== getInkStyle() || this.settings.inkTaperedEnds !== getTaperedEnds()) {
@@ -290,6 +320,8 @@ export default class InklingPlugin extends Plugin {
 	}
 
 	onunload(): void {
+		// A change in the last second is still waiting for its save.
+		this.memorySave.flush();
 		// The "annotate" buttons live on Obsidian's *own* PDF views, not on
 		// anything this plugin owns and Obsidian would tear down for it — so
 		// without this they'd outlive the plugin, still sitting in the
