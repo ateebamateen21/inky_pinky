@@ -81,6 +81,16 @@ describe('the settings tab', () => {
 		expect(held.blockCaptions).toBe(true);
 	});
 
+	it('turns on always opening PDFs in Inkling, and saves it', async () => {
+		const { tab, plugin } = openTab();
+		expect(tab.getControlValue('alwaysOpenInInkling')).toBe(false);
+
+		await tab.setControlValue('alwaysOpenInInkling', true);
+
+		expect(plugin.settings.alwaysOpenInInkling).toBe(true);
+		expect(plugin.saveSettings).toHaveBeenCalledTimes(1);
+	});
+
 	it('refuses a value no option offers', async () => {
 		const { tab, plugin } = openTab({ darkInversion: 'on' });
 

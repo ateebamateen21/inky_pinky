@@ -136,6 +136,14 @@ export class InklingSettingTab extends PluginSettingTab {
 				heading: 'Reading and editing',
 				items: [
 					{
+						name: 'Always open PDFs in Inkling',
+						desc:
+							'Open a PDF straight in Inkling instead of Obsidian’s built-in viewer. Inkling only remembers the page you were on in ' +
+							'each PDF when this is on. With it off, PDFs open in the built-in viewer and the pencil button switches one over.',
+						aliases: ['native viewer', 'pdf viewer', 'last page', 'remember page'],
+						control: { type: 'toggle', key: 'alwaysOpenInInkling', defaultValue: defaults.alwaysOpenInInkling },
+					},
+					{
 						name: 'Invert PDF pages',
 						desc: 'Darken the PDF page, and invert the ink on it so it stays readable. Off by default: the toolbar’s contrast button flips one document without changing this.',
 						aliases: ['dark mode', 'night'],

@@ -62,6 +62,13 @@ export interface InklingSettings {
 	penButtonMiddle: PenButtonTool;
 	penButtonEraser: PenButtonTool;
 	darkInversion: DarkInversion;
+	// Whether a PDF opens straight in Inkling's view, instead of in
+	// Obsidian's built-in one with a pencil button to switch over. Off by
+	// default, so nothing changes until it is asked for. Inkling only
+	// promises to reopen a PDF on the page it was left on when this is on:
+	// the built-in viewer keeps its own idea of the page, which Inkling
+	// cannot read or update, and the two can disagree.
+	alwaysOpenInInkling: boolean;
 	toolbarStartsCollapsed: boolean;
 	// Whether an ink block offers a caption to write.
 	//
@@ -107,6 +114,7 @@ export function defaultSettings(): InklingSettings {
 		// not something a dark theme should decide on the reader's behalf. The
 		// toolbar's contrast button flips it for the session either way.
 		darkInversion: 'off',
+		alwaysOpenInInkling: false,
 		toolbarStartsCollapsed: false,
 		blockCaptions: false,
 		// Wherever the vault's images already go, so ink lands somewhere
@@ -220,6 +228,7 @@ export function normalizeSettings(raw: unknown): InklingSettings {
 		penButtonMiddle: pick(source.penButtonMiddle, PEN_BUTTON_TOOLS, defaults.penButtonMiddle),
 		penButtonEraser: pick(source.penButtonEraser, PEN_BUTTON_TOOLS, defaults.penButtonEraser),
 		darkInversion: pick(source.darkInversion, ['off', 'on', 'follow-theme'] as const, defaults.darkInversion),
+		alwaysOpenInInkling: bool(source.alwaysOpenInInkling, defaults.alwaysOpenInInkling),
 		toolbarStartsCollapsed: bool(source.toolbarStartsCollapsed, defaults.toolbarStartsCollapsed),
 		blockCaptions: bool(source.blockCaptions, defaults.blockCaptions),
 		inkFileLocation: pick(source.inkFileLocation, INK_FILE_LOCATIONS, defaults.inkFileLocation),
