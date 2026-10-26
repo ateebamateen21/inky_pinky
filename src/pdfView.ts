@@ -15,6 +15,7 @@ import { RENDER_SCALE, baseRenderScale, layoutRenderScale, zoomedRenderScale } f
 import { maxWriteIntervalMs } from './pdf/saveCadence';
 import { placeWithin } from './pdf/popoverPlacement';
 import { FileMemoryStore } from './fileMemory';
+import { allowCorePdfOnce } from './viewRedirect';
 import { defaultSettings, type InklingSettings } from './settings';
 import { applyTemplate, insertPageLike, pageSizeFor } from './templates';
 import { enterFullscreen, exitFullscreen } from './pdfFullscreen';
@@ -704,6 +705,9 @@ export class PdfAnnotateView extends FileView {
 		// running app: the core PDF view honours the subpath form (the same
 		// one `[[file.pdf#page=5]]` links use) and ignores a bare page
 		// number, so the earlier shape carried nothing over.
+		// Said first so "Always open PDFs in Inkling" does not turn this
+		// straight back into Inkling's view.
+		allowCorePdfOnce();
 		await this.leaf.setViewState(
 			{ type: CORE_PDF_VIEW_TYPE, state: { file: file.path } },
 			{ subpath: `#page=${this.currentPageNumber}` },

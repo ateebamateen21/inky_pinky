@@ -16,6 +16,7 @@ import { DeferredSave } from './deferredSave';
 import { FileMemoryStore } from './fileMemory';
 import { defaultSettings, normalizeSettings, type InklingSettings } from './settings';
 import { InklingSettingTab } from './settingsTab';
+import { installViewStateRedirect, redirectedViewState } from './viewRedirect';
 
 // The page Obsidian's own PDF view is currently showing. Its ephemeral
 // state is no help here — verified against the running app, the core PDF
@@ -117,8 +118,29 @@ export default class InklingPlugin extends Plugin {
 		// into VIEW_TYPE_PDF, and Inkling's own view offers a matching action
 		// back to the core view (see PdfAnnotateView.exitEditMode).
 		this.registerEvent(this.app.workspace.on('active-leaf-change', (leaf) => this.decorateIfCorePdfLeaf(leaf)));
+		// "Always open PDFs in Inkling": every way of opening a file ends in
+		// WorkspaceLeaf.setViewState, so with the setting on a request for
+		// the built-in PDF view is changed there into one for Inkling's.
+		// Read at each call, so turning the setting on or off applies at once
+		// to whatever is opened next; a tab already open is left as it is.
+		this.register(
+			installViewStateRedirect(WorkspaceLeaf.prototype, (viewState) =>
+				redirectedViewState(viewState, {
+					enabled: this.settings.alwaysOpenInInkling,
+					coreType: CORE_PDF_VIEW_TYPE,
+					inklingType: VIEW_TYPE_PDF,
+				}),
+			),
+		);
 		this.app.workspace.onLayoutReady(() => {
-			for (const leaf of this.app.workspace.getLeavesOfType(CORE_PDF_VIEW_TYPE)) this.decorateIfCorePdfLeaf(leaf);
+			for (const leaf of this.app.workspace.getLeavesOfType(CORE_PDF_VIEW_TYPE)) {
+				// Tabs restored at startup may have been put back before the
+				// redirect above was in place. With the setting on they are
+				// switched over, leaving the built-in viewer's page behind
+				// since it is the stale one.
+				if (this.settings.alwaysOpenInInkling) void this.switchToInkling(leaf, false);
+				else this.decorateIfCorePdfLeaf(leaf);
+			}
 		});
 
 		this.addCommand({
@@ -349,14 +371,14 @@ export default class InklingPlugin extends Plugin {
 		this.actions.push(view.addAction('pencil', 'Annotate with Inkling', () => void this.switchToInkling(leaf)));
 	}
 
-	private async switchToInkling(leaf: WorkspaceLeaf): Promise<void> {
+	private async switchToInkling(leaf: WorkspaceLeaf, carryCorePage = true): Promise<void> {
 		const view = leaf.view;
 		const file = view instanceof FileView ? view.file : null;
 		if (!file) return;
 		// Carries over whatever page the native view was showing, rather than
 		// always reopening at page 1. Read *before* the state swap below,
 		// while `leaf`'s view is still the native one whose position this is.
-		const page = readCorePdfPage(view);
+		const page = carryCorePage ? readCorePdfPage(view) : null;
 		await leaf.setViewState({ type: VIEW_TYPE_PDF, state: { file: file.path } }, page === null ? undefined : { page });
 	}
 

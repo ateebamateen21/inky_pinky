@@ -134,6 +134,22 @@ describe('normalizeSettings', () => {
 	});
 });
 
+describe('always open PDFs in Inkling', () => {
+	it('is off until asked for', () => {
+		// Turning it on changes how every PDF in the vault opens, so it must
+		// never be on by default or by accident.
+		expect(defaultSettings().alwaysOpenInInkling).toBe(false);
+	});
+
+	it('falls back to off when the stored value is not a boolean', () => {
+		expect(normalizeSettings({ alwaysOpenInInkling: 'yes' }).alwaysOpenInInkling).toBe(false);
+	});
+
+	it('is kept when it was turned on', () => {
+		expect(normalizeSettings({ alwaysOpenInInkling: true }).alwaysOpenInInkling).toBe(true);
+	});
+});
+
 describe('block captions', () => {
 	it('are off until asked for', () => {
 		// A setting that changes how the plugin works the moment it is added
