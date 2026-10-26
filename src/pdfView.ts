@@ -15,6 +15,8 @@ import { RENDER_SCALE, baseRenderScale, layoutRenderScale, zoomedRenderScale } f
 import { maxWriteIntervalMs } from './pdf/saveCadence';
 import { placeWithin } from './pdf/popoverPlacement';
 import { FileMemoryStore } from './fileMemory';
+import { defaultLayout } from './layout/pageLayout';
+import { appendRows } from './pdf/pageGrid';
 import { allowCorePdfOnce } from './viewRedirect';
 import { defaultSettings, type InklingSettings } from './settings';
 import { applyTemplate, insertPageLike, pageSizeFor } from './templates';
@@ -918,8 +920,10 @@ export class PdfAnnotateView extends FileView {
 		// reader should wait behind to see page 1.
 		void this.loadOutline(pdf, token);
 
-		for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
-			const placeholder = this.contentEl.createDiv({
+		// Every page box sits in a row box. For now every row holds one page,
+		// which looks the same as the pages sitting in the container directly.
+		appendRows(this.contentEl, defaultLayout(pdf.numPages), (row, pageNumber) => {
+			const placeholder = row.createDiv({
 				cls: 'inkling-pdf-page-placeholder',
 			});
 			placeholder.dataset[PAGE_NUMBER_ATTR] = String(pageNumber);
@@ -931,7 +935,7 @@ export class PdfAnnotateView extends FileView {
 			// stroke that starts on top of it.
 			placeholder.createDiv({ cls: 'inkling-page-number', text: String(pageNumber) });
 			observer.observe(placeholder);
-		}
+		});
 
 		// Covers setEphemeralState firing *before* this — its own immediate
 		// scrollToPage call would have found no placeholders yet at that

@@ -25,6 +25,21 @@
 	background-color: var(--background-secondary);
 }
 
+/* One row of pages. For now every row holds a single page, centred, so the
+   pages look exactly as they did sitting in the container directly. */
+.inkling-pdf-row {
+	display: flex;
+	justify-content: center;
+	align-items: flex-start;
+	/* The container's full width, so a page's max-width percentage below is
+	   still measured against the pane, as it was when the pane was the
+	   page's parent. */
+	width: 100%;
+	/* A flex item in a column container shrinks by default, and an empty row
+	   would collapse to nothing; see the note on the page box below. */
+	flex: none;
+}
+
 .inkling-pdf-page-placeholder {
 	position: relative;
 	max-width: calc(100% * var(--inkling-view-zoom, 1));
