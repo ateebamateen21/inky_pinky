@@ -425,6 +425,11 @@ export class PdfAnnotateView extends FileView {
 	// page it opens on, so the first moments of a load, when the view still
 	// reads as page 1, cannot overwrite where the reader had got to.
 	private rememberingPage = false;
+	// Whether the pages are shown in the 2D grid, laid out as the file memory
+	// has them, instead of the plain column. For this visit only: it starts
+	// off every time a file is opened.
+	private gridMode = false;
+	private switchingLayout = false;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -475,6 +480,8 @@ export class PdfAnnotateView extends FileView {
 			isShapeRecognitionEnabled: () => getSettings().shapeRecognition === 'hold',
 			onToggleInversion: () => this.toggleInversion(),
 			isInverted: () => this.isInverted(),
+			onToggleGrid: () => void this.toggleGridMode(),
+			isGridMode: () => this.gridMode,
 		});
 	}
 
@@ -920,13 +927,21 @@ export class PdfAnnotateView extends FileView {
 		// reader should wait behind to see page 1.
 		void this.loadOutline(pdf, token);
 
-		// Every page box sits in a row box. For now every row holds one page,
-		// which looks the same as the pages sitting in the container directly.
-		appendRows(this.contentEl, defaultLayout(pdf.numPages), (row, pageNumber) => {
+		// Every page box sits in a row box. In the plain view every row holds
+		// one page, which looks the same as the pages sitting in the container
+		// directly. In the 2D grid the rows follow the saved layout (or the
+		// plain column when none is saved or it no longer fits the file), and
+		// sit in a grid box of their own that places each page in its cell.
+		const layout =
+			(this.gridMode ? this.getFileMemory().getLayout(file.path, pdf.numPages) : null) ?? defaultLayout(pdf.numPages);
+		this.contentEl.toggleClass('is-grid', this.gridMode);
+		const host = this.gridMode ? this.contentEl.createDiv({ cls: 'inkling-pdf-grid' }) : this.contentEl;
+		const columns = appendRows(host, layout, (row, pageNumber, position) => {
 			const placeholder = row.createDiv({
 				cls: 'inkling-pdf-page-placeholder',
 			});
 			placeholder.dataset[PAGE_NUMBER_ATTR] = String(pageNumber);
+			if (this.gridMode) placeholder.setCssProps({ '--inkling-row': String(position.row), '--inkling-col': String(position.column) });
 			sizePlaceholder(placeholder, estimatedViewport.width, estimatedViewport.height);
 			// A small page number in the corner of the sheet. A sibling of
 			// the zoomable `.inkling-page-content` rather than a child, so
@@ -936,6 +951,7 @@ export class PdfAnnotateView extends FileView {
 			placeholder.createDiv({ cls: 'inkling-page-number', text: String(pageNumber) });
 			observer.observe(placeholder);
 		});
+		if (this.gridMode) host.setCssProps({ '--inkling-grid-cols': String(columns) });
 
 		// Covers setEphemeralState firing *before* this — its own immediate
 		// scrollToPage call would have found no placeholders yet at that
@@ -1998,6 +2014,29 @@ export class PdfAnnotateView extends FileView {
 
 	isInverted(): boolean {
 		return this.contentEl.hasClass('is-inverted');
+	}
+
+	// Switches between the plain column of pages and the 2D grid. The pages
+	// are rebuilt, as adding a page does, so unsaved ink is saved first and
+	// the reader is put back on the page they were on.
+	private async toggleGridMode(): Promise<void> {
+		const file = this.currentFile;
+		if (!file || this.switchingLayout) return;
+		this.switchingLayout = true;
+
+		try {
+			await this.flushAnnotationsIfDirty(file);
+			const page = this.currentPageNumber;
+			this.gridMode = !this.gridMode;
+			await this.onLoadFile(file);
+			this.scrollToPage(page);
+		} catch (error) {
+			console.error('Inkling: failed to switch the page layout.', error);
+			new Notice('Inkling: could not switch the page layout.');
+		} finally {
+			this.switchingLayout = false;
+			this.controller.refreshUi();
+		}
 	}
 
 	// Leaves something visible instead of the blank/black screen a failed

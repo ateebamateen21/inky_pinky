@@ -262,7 +262,15 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		{ icon: 'panel-left', fallback: '☰', title: 'Outline and find' },
 		() => controller.toggleNavigation(),
 	);
-	actionGroup.append(undoButton, redoButton, separator(), deleteButton, clearPageButton, addPageButton, addPageMenuButton, invertButton, navButton);
+
+	// Switches between the plain column of pages and the 2D grid. A way of
+	// looking at the document, so like zoom it stays on a read-only one.
+	const gridButton = iconButton(
+		'inkling-tool-button',
+		{ icon: 'layout-grid', fallback: '▦', title: '2D page layout' },
+		() => controller.toggleGrid(),
+	);
+	actionGroup.append(undoButton, redoButton, separator(), deleteButton, clearPageButton, addPageButton, addPageMenuButton, invertButton, navButton, gridButton);
 
 	// Readouts, not controls — pushed to the far end of the strip (see
 	// .inkling-toolbar-status) so the things you press stay together on the
@@ -373,7 +381,7 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		const noteButton = toolButtons.get('note');
 		if (noteButton && !controller.canTakeNotes()) noteButton.hidden = true;
 		for (const group of [colorGroup, widthGroup, statusGroup]) group.hidden = collapsed;
-		for (const button of [redoButton, deleteButton, clearPageButton, addPageButton, addPageMenuButton, invertButton, navButton]) button.hidden = collapsed;
+		for (const button of [redoButton, deleteButton, clearPageButton, addPageButton, addPageMenuButton, invertButton, navButton, gridButton]) button.hidden = collapsed;
 		setIconOrText(collapseButton, collapsed ? 'chevrons-down' : 'chevrons-up', collapsed ? '⌄' : '⌃');
 		fullscreenButton.hidden = !controller.supportsFullscreen();
 		const fullscreen = controller.isFullscreen();
@@ -478,8 +486,11 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 			addPageMenuButton.hidden = addPageButton.hidden;
 			navButton.hidden = !controller.canToggleNavigation();
 			invertButton.hidden = !controller.canInvert();
+			gridButton.hidden = !controller.canToggleGrid();
 		}
 		invertButton.toggleClass('is-active', controller.isInverted());
+		gridButton.toggleClass('is-active', controller.isGridMode());
+		gridButton.setAttribute('aria-pressed', String(controller.isGridMode()));
 		addPageButton.disabled = readOnly;
 		addPageMenuButton.disabled = readOnly;
 	};
