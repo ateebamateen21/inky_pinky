@@ -135,6 +135,25 @@ export function openPdfView(options: { toolState?: ToolState; writeDone?: () => 
 			}
 			container.dispatchEvent(new Event('scroll'));
 		},
+		// Pages laid out anywhere, not just down a column: each at its own
+		// `left`/`top` and size, relative to a view `viewport` wide and tall
+		// that starts at the origin. Tells the view it scrolled, as above.
+		placePages(options: {
+			viewport: { width: number; height: number };
+			pages: { page: number; left: number; top: number; width: number; height: number }[];
+		}) {
+			const container = view.contentEl;
+			container.getBoundingClientRect = () => box(0, 0, options.viewport.width, options.viewport.height);
+			container.replaceChildren();
+			for (const { page, left, top, width, height } of options.pages) {
+				const placeholder = container.appendChild(document.createElement('div'));
+				placeholder.className = 'inkling-pdf-page-placeholder';
+				placeholder.dataset.pageNumber = String(page);
+				placeholder.getBoundingClientRect = () => box(left, top, width, height);
+				internals.visiblePages.add(page);
+			}
+			container.dispatchEvent(new Event('scroll'));
+		},
 		// A page mounted and drawable, backed at `rendered` after first
 		// rendering at `base` — a page a zoom has since sharpened, when the
 		// two differ.
@@ -163,6 +182,10 @@ export function openPdfView(options: { toolState?: ToolState; writeDone?: () => 
 			};
 		},
 	};
+}
+
+function box(left: number, top: number, width: number, height: number): DOMRect {
+	return { x: left, y: top, left, top, right: left + width, bottom: top + height, width, height, toJSON: () => ({}) };
 }
 
 function rect(top: number, height: number): DOMRect {
