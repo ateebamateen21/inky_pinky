@@ -40,6 +40,46 @@
 	flex: none;
 }
 
+/* 2D mode. The pages sit in a grid box of their own, one cell each, placed
+   by the row and column numbers the view gives them. Rows stop being boxes
+   (display: contents) so the pages are the grid's own cells. */
+.view-content.inkling-pdf-view.is-grid {
+	/* Not a flex column, whose centring cannot scroll to what overflows on
+	   the left: the grid below is as wide as its pages and starts at the left
+	   edge, so a grid wider than the pane scrolls sideways to all of it. */
+	display: block;
+}
+
+.inkling-pdf-grid {
+	display: grid;
+	grid-template-columns: repeat(var(--inkling-grid-cols, 1), max-content);
+	gap: calc(var(--size-4-3) * var(--inkling-view-zoom, 1));
+	align-items: start;
+	/* At least the pane wide, so a grid that fits is centred like the plain
+	   column; exactly as wide as its columns when it does not. */
+	justify-content: center;
+	width: max-content;
+	min-width: 100%;
+}
+
+.inkling-pdf-grid .inkling-pdf-row {
+	display: contents;
+}
+
+.inkling-pdf-grid .inkling-pdf-page-placeholder {
+	grid-row: var(--inkling-row);
+	grid-column: var(--inkling-col);
+	/* The percentage limit below is of the grid cell here, which is as wide
+	   as this page: no limit at all. */
+	max-width: none;
+}
+
+/* The toolbar sits in the scroller, so a grid scrolled sideways would carry
+   it off the left edge with it. */
+.is-grid .inkling-toolbar {
+	left: 0;
+}
+
 .inkling-pdf-page-placeholder {
 	position: relative;
 	max-width: calc(100% * var(--inkling-view-zoom, 1));

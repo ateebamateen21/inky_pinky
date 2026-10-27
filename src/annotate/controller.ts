@@ -238,6 +238,10 @@ export interface AnnotationControllerOptions {
 	// Asks the host to show or hide its navigation panel. Same reasoning:
 	// the panel belongs to the PDF view, not to the shared controller.
 	onToggleNavigation?: () => void;
+	// Switches the view between the plain column of pages and the 2D grid.
+	// Also the host's: only it knows how its pages are laid out.
+	onToggleGrid?: () => void;
+	isGridMode?: () => boolean;
 }
 
 // The shared annotation tool module — owns tool/color/width state, an
@@ -849,6 +853,18 @@ export class AnnotationController {
 
 	toggleNavigation(): void {
 		this.options.onToggleNavigation?.();
+	}
+
+	canToggleGrid(): boolean {
+		return this.options.onToggleGrid !== undefined;
+	}
+
+	isGridMode(): boolean {
+		return this.options.isGridMode?.() ?? false;
+	}
+
+	toggleGrid(): void {
+		this.options.onToggleGrid?.();
 	}
 
 	clearCurrentPage(): void {

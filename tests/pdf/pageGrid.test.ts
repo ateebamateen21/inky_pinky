@@ -71,3 +71,49 @@ describe('appendRows', () => {
 		expect(container.children[1]?.className).toBe(ROW_CLASS);
 	});
 });
+
+describe('appendRows, grid positions', () => {
+	it('gives each page its row and column, counted from 1, and the width of the grid', () => {
+		// Row 0: pages 1 and 2. Row 1: page 3. Row 2: page 4 left of page 5.
+		const layout: PageLayout = {
+			cells: [
+				{ row: 0, col: 0 },
+				{ row: 0, col: 1 },
+				{ row: 1, col: 0 },
+				{ row: 2, col: -1 },
+				{ row: 2, col: 0 },
+			],
+		};
+		const seen = new Map<number, { row: number; column: number }>();
+		const width = appendRows(document.createElement('div'), layout, (_row, page, position) => seen.set(page, position));
+
+		expect(width).toBe(3);
+		expect(seen.get(1)).toEqual({ row: 1, column: 2 });
+		expect(seen.get(2)).toEqual({ row: 1, column: 3 });
+		expect(seen.get(3)).toEqual({ row: 2, column: 2 });
+		expect(seen.get(4)).toEqual({ row: 3, column: 1 });
+		expect(seen.get(5)).toEqual({ row: 3, column: 2 });
+	});
+
+	it('leaves out empty rows, and counts empty columns between pages', () => {
+		// Rows 0 and 7 and columns 0 and 3 only: the rows close up, the
+		// columns between do not.
+		const layout: PageLayout = {
+			cells: [
+				{ row: 0, col: 0 },
+				{ row: 7, col: 3 },
+			],
+		};
+		const seen = new Map<number, { row: number; column: number }>();
+		const width = appendRows(document.createElement('div'), layout, (_row, page, position) => seen.set(page, position));
+
+		expect(width).toBe(4);
+		expect(seen.get(1)).toEqual({ row: 1, column: 1 });
+		expect(seen.get(2)).toEqual({ row: 2, column: 4 });
+	});
+
+	it('is one column wide for the plain layout, and no columns wide for no pages', () => {
+		expect(appendRows(document.createElement('div'), defaultLayout(4), () => undefined)).toBe(1);
+		expect(appendRows(document.createElement('div'), defaultLayout(0), () => undefined)).toBe(0);
+	});
+});
