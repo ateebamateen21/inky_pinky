@@ -49,6 +49,10 @@ const PAGE_NUMBER_ATTR = 'pageNumber';
 // are redrawn from it whenever a page mounts again.
 const PAGE_RETAIN_MARGIN = 3;
 
+// Two pages showing areas within this many square CSS pixels of each other
+// count as showing the same amount, so a tie is not decided by rounding.
+const SAME_AREA = 1;
+
 // How long to wait after the last edit before writing annotations into the
 // file — pdf-lib's rewrites aren't incremental, so batching rapid
 // successive strokes into one save matters more here than for most
@@ -1235,20 +1239,35 @@ export class PdfAnnotateView extends FileView {
 	// left the padding, so page 2 could never become current, and zooming it
 	// showed no zoom readout at all. Measured on scroll instead, and only
 	// over the padded set, which is a handful of pages however long the book.
+	// The current page is the one with the most of itself in the view, by
+	// area: in the grid, pages sit side by side, and a page half-hidden off
+	// the side counts for only what shows. When two show the same area (a
+	// whole row in view, say) the one nearer the middle of the view wins,
+	// and failing that the lower-numbered, as it always was.
 	private updateCurrentPage(): void {
 		const container = this.contentEl.getBoundingClientRect();
+		const middle = { x: (container.left + container.right) / 2, y: (container.top + container.bottom) / 2 };
 		let best: number | null = null;
-		let bestShown = 0;
+		let bestArea = 0;
+		let bestDistance = Infinity;
 		for (const pageNumber of [...this.visiblePages].sort((a, b) => a - b)) {
 			const placeholder = this.contentEl.querySelector<HTMLElement>(
 				`.inkling-pdf-page-placeholder[data-page-number="${pageNumber}"]`,
 			);
 			if (!placeholder) continue;
 			const rect = placeholder.getBoundingClientRect();
-			const shown = Math.min(rect.bottom, container.bottom) - Math.max(rect.top, container.top);
-			if (shown > bestShown) {
+			const shownWidth = Math.min(rect.right, container.right) - Math.max(rect.left, container.left);
+			const shownHeight = Math.min(rect.bottom, container.bottom) - Math.max(rect.top, container.top);
+			if (shownWidth <= 0 || shownHeight <= 0) continue;
+
+			const area = shownWidth * shownHeight;
+			const distance = Math.hypot((rect.left + rect.right) / 2 - middle.x, (rect.top + rect.bottom) / 2 - middle.y);
+			const larger = area > bestArea + SAME_AREA;
+			const same = Math.abs(area - bestArea) <= SAME_AREA;
+			if (larger || (same && distance < bestDistance)) {
 				best = pageNumber;
-				bestShown = shown;
+				bestArea = area;
+				bestDistance = distance;
 			}
 		}
 
