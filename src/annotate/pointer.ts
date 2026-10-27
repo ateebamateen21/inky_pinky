@@ -151,9 +151,11 @@ export function findScrollParent(el: HTMLElement): HTMLElement | null {
 	let node = el.parentElement;
 	while (node) {
 		const style = getComputedStyle(node);
-		if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && node.scrollHeight > node.clientHeight) {
-			return node;
-		}
+		// Either way counts: a grid wider than the pane can scroll sideways
+		// without being any taller than it.
+		const scrollsDown = (style.overflowY === 'auto' || style.overflowY === 'scroll') && node.scrollHeight > node.clientHeight;
+		const scrollsAcross = (style.overflowX === 'auto' || style.overflowX === 'scroll') && node.scrollWidth > node.clientWidth;
+		if (scrollsDown || scrollsAcross) return node;
 		node = node.parentElement;
 	}
 	return null;
@@ -185,11 +187,14 @@ function stopMomentum(): void {
 	momentumFrame = null;
 }
 
-function startMomentum(scrollParent: HTMLElement, velocity: number): void {
+// `velocity` is vertical and `velocityX` sideways, both in px/ms. The glide
+// keeps the direction of the flick, so a diagonal one glides diagonally.
+function startMomentum(scrollParent: HTMLElement, velocity: number, velocityX = 0): void {
 	stopMomentum();
-	if (Math.abs(velocity) < MOMENTUM_START_VELOCITY) return;
+	if (Math.hypot(velocity, velocityX) < MOMENTUM_START_VELOCITY) return;
 
 	let current = velocity;
+	let currentX = velocityX;
 	let previous = performance.now();
 
 	const step = (now: number) => {
@@ -200,12 +205,16 @@ function startMomentum(scrollParent: HTMLElement, velocity: number): void {
 		previous = now;
 
 		const before = scrollParent.scrollTop;
+		const beforeX = scrollParent.scrollLeft;
 		scrollParent.scrollTop = before - current * elapsed;
-		// Hit the top or bottom — nothing left to glide through.
-		if (scrollParent.scrollTop === before) return;
+		scrollParent.scrollLeft = beforeX - currentX * elapsed;
+		// Hit an edge in both directions — nothing left to glide through.
+		if (scrollParent.scrollTop === before && scrollParent.scrollLeft === beforeX) return;
 
-		current *= Math.pow(MOMENTUM_FRICTION, elapsed / 16);
-		if (Math.abs(current) < MOMENTUM_MIN_VELOCITY) return;
+		const decay = Math.pow(MOMENTUM_FRICTION, elapsed / 16);
+		current *= decay;
+		currentX *= decay;
+		if (Math.hypot(current, currentX) < MOMENTUM_MIN_VELOCITY) return;
 		momentumFrame = window.requestAnimationFrame(step);
 	};
 
@@ -298,13 +307,17 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 	const isPenContact = (event: PointerEvent) => event.pressure > 0 && event.buttons !== 0;
 	let touchPan: {
 		pointerId: number;
+		startX: number;
 		startY: number;
+		scrollLeft: number;
 		scrollTop: number;
 		scrollParent: HTMLElement;
 		// Last sample, for the flick velocity handed to startMomentum below.
+		lastX: number;
 		lastY: number;
 		lastTime: number;
 		velocity: number;
+		velocityX: number;
 	} | null = null;
 	// Every currently-down touch's latest screen position — tracked
 	// independently of touchPan/pinch so a second touch joining mid-gesture
@@ -325,6 +338,7 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		// Where the fingers started, as a fraction of the page's box — what
 		// a view zoom holds still.
 		hold: Point;
+		lastMidX: number;
 		lastMidY: number;
 		scrollParent: HTMLElement | null;
 		content: HTMLElement;
@@ -369,12 +383,16 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		if (!scrollParent) return;
 		touchPan = {
 			pointerId: event.pointerId,
+			startX: event.clientX,
 			startY: event.clientY,
+			scrollLeft: scrollParent.scrollLeft,
 			scrollTop: scrollParent.scrollTop,
 			scrollParent,
+			lastX: event.clientX,
 			lastY: event.clientY,
 			lastTime: event.timeStamp,
 			velocity: 0,
+			velocityX: 0,
 		};
 		capturePointer(el, event.pointerId);
 		event.preventDefault();
@@ -430,6 +448,7 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 			startView: getHandlers()?.getViewZoom?.() ?? 1,
 			anchor,
 			hold: { x: (mid.x - rect.left) / width, y: (mid.y - rect.top) / height },
+			lastMidX: mid.x,
 			lastMidY: mid.y,
 			scrollParent: findScrollParent(el),
 			content,
@@ -526,7 +545,9 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 				// (A view zoom already moves the scroll to hold its point.)
 				if (!viewMoved && next.page <= MIN_ZOOM && pinch.scrollParent) {
 					pinch.scrollParent.scrollTop += pinch.lastMidY - mid.y;
+					pinch.scrollParent.scrollLeft += pinch.lastMidX - mid.x;
 				}
+				pinch.lastMidX = mid.x;
 				pinch.lastMidY = mid.y;
 				handlers?.onZoomChange?.(next.page);
 			}
@@ -536,6 +557,9 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 
 		if (touchPan && event.pointerId === touchPan.pointerId) {
 			touchPan.scrollParent.scrollTop = touchPan.scrollTop - (event.clientY - touchPan.startY);
+			// Sideways too, which only does anything where the view is wider
+			// than the pane (the 2D grid); in the plain column it stays put.
+			touchPan.scrollParent.scrollLeft = touchPan.scrollLeft - (event.clientX - touchPan.startX);
 
 			// Tracked against the previous *sample*, not the gesture start, so
 			// this reflects how fast the finger is moving right now — which is
@@ -543,7 +567,10 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 			const elapsed = event.timeStamp - touchPan.lastTime;
 			if (elapsed > 0) {
 				const sample = (event.clientY - touchPan.lastY) / elapsed;
+				const sampleX = (event.clientX - touchPan.lastX) / elapsed;
 				touchPan.velocity = touchPan.velocity * (1 - VELOCITY_SMOOTHING) + sample * VELOCITY_SMOOTHING;
+				touchPan.velocityX = touchPan.velocityX * (1 - VELOCITY_SMOOTHING) + sampleX * VELOCITY_SMOOTHING;
+				touchPan.lastX = event.clientX;
 				touchPan.lastY = event.clientY;
 				touchPan.lastTime = event.timeStamp;
 			}
@@ -632,7 +659,7 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		if (touchPan && event.pointerId === touchPan.pointerId) {
 			// A cancelled pan (the browser taking the gesture over, a palm
 			// landing) shouldn't fling the page — only a real lift does.
-			if (!cancelled) startMomentum(touchPan.scrollParent, touchPan.velocity);
+			if (!cancelled) startMomentum(touchPan.scrollParent, touchPan.velocity, touchPan.velocityX);
 			touchPan = null;
 			return;
 		}

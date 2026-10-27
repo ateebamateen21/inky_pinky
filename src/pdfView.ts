@@ -920,8 +920,12 @@ export class PdfAnnotateView extends FileView {
 			// arriving blank and filling in late — much more noticeable now
 			// that a flick keeps gliding (see pointer.ts's momentum). Kept
 			// under PAGE_RETAIN_MARGIN so pre-rendered pages aren't
-			// immediately recycled again.
-			{ root: this.contentEl, rootMargin: '1000px 0px' },
+			// immediately recycled again. All four sides: in the 2D grid a page
+			// can be a column away to the left or right, and would otherwise
+			// stay a blank box until it was scrolled right into view. In the
+			// plain column there is nothing sideways to pre-render, so the
+			// extra margin costs nothing.
+			{ root: this.contentEl, rootMargin: '1000px' },
 		);
 		this.observer = observer;
 
