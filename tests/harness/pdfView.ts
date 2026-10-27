@@ -2,6 +2,7 @@ import { vi } from 'vitest';
 import { TFile } from './obsidian';
 import { installSurfaceStubs, makePointerEvent } from './surface';
 import { ToolState, type Annotation } from '../../src/annotate';
+import type { ViewZoomHold } from '../../src/annotate/pointer';
 import type { FileMemoryStore } from '../../src/fileMemory';
 import { PdfAnnotateView } from '../../src/pdfView';
 
@@ -81,7 +82,11 @@ export function openPdfView(options: { toolState?: ToolState; writeDone?: () => 
 			setTool(tool: 'pen'): void;
 			setWidth(width: number): void;
 			getCurrentPageNumber(): number;
+			fitWidth(): void;
+			fitPage(): void;
 		};
+		scrollToPage(page: number): void;
+		setViewZoom(zoom: number, hold?: ViewZoomHold): void;
 		markPageDirty(page: number): void;
 		pendingScrollToPage: number | null;
 		scrollToOpeningPage(file: TFile, pageCount: number): void;
@@ -135,6 +140,12 @@ export function openPdfView(options: { toolState?: ToolState; writeDone?: () => 
 			}
 			container.dispatchEvent(new Event('scroll'));
 		},
+		// What the toolbar's navigation does: scrolling to a page, the whole-view
+		// zoom, and the two fit buttons.
+		scrollToPage: (page: number) => internals.scrollToPage(page),
+		setViewZoom: (zoom: number, hold?: ViewZoomHold) => internals.setViewZoom(zoom, hold),
+		fitWidth: () => internals.controller.fitWidth(),
+		fitPage: () => internals.controller.fitPage(),
 		// Pages laid out anywhere, not just down a column: each at its own
 		// `left`/`top` and size, relative to a view `viewport` wide and tall
 		// that starts at the origin. Tells the view it scrolled, as above.
@@ -172,6 +183,9 @@ export function openPdfView(options: { toolState?: ToolState; writeDone?: () => 
 			const overlay = canvases[1];
 			if (!overlay) throw new Error('mountPage built no overlay canvas');
 			return {
+				// The element the page was mounted in, for tests that need
+				// to say where it sits.
+				host,
 				drawStroke(points: Array<[number, number]>) {
 					points.forEach(([x, y], i) => {
 						overlay.dispatchEvent(makePointerEvent(i === 0 ? 'pointerdown' : 'pointermove', { clientX: x, clientY: y }));
