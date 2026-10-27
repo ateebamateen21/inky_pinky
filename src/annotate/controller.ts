@@ -242,6 +242,10 @@ export interface AnnotationControllerOptions {
 	// Also the host's: only it knows how its pages are laid out.
 	onToggleGrid?: () => void;
 	isGridMode?: () => boolean;
+	// Scrolls the host sideways so a page is in the middle of the view. The
+	// fit buttons call it once they have sized the page, because the view
+	// zoom alone can leave it off to one side in the grid.
+	centerPage?: (placeholder: HTMLElement) => void;
 }
 
 // The shared annotation tool module — owns tool/color/width state, an
@@ -689,6 +693,7 @@ export class AnnotationController {
 		const target = this.currentPageTarget();
 		if (target) this.applyViewZoom(1, this.viewportHold(target.mount, target.placeholder));
 		else this.applyViewZoom(1);
+		if (target) this.options.centerPage?.(target.placeholder);
 	}
 
 	// Shrinks the view just enough that the current page fits the pane's
@@ -707,6 +712,7 @@ export class AnnotationController {
 		// page's height; asking the host first would size to stale numbers.
 		const measured = this.options.fitPage?.(target.placeholder) ?? fit;
 		this.applyViewZoom(measured.zoom, measured.hold);
+		this.options.centerPage?.(target.placeholder);
 	}
 
 	// Every page back to 1x, mounted or not. A page scrolled out of sight

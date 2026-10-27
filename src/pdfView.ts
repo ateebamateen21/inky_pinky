@@ -462,6 +462,7 @@ export class PdfAnnotateView extends FileView {
 			isFullscreen: () => this.fullscreen,
 			toggleFullscreen: () => this.toggleFullscreen(),
 			fitPage: (placeholder) => this.fitPage(placeholder),
+			centerPage: (placeholder) => this.centerPageHorizontally(placeholder),
 			// Relative to the page's first render, so an unzoomed page draws
 			// exactly as it always has, and a page upgradeResolution has
 			// since re-backed denser draws the same width in PDF space rather
@@ -1024,6 +1025,21 @@ export class PdfAnnotateView extends FileView {
 		if (!hold) return;
 		const rect = hold.placeholder.getBoundingClientRect();
 		this.contentEl.scrollTop += rect.top + hold.fy * rect.height - hold.screen.y;
+		// Sideways too, for the grid, where pages can sit beyond the edge of
+		// the view. In the plain column nothing can scroll sideways, so this
+		// changes nothing there.
+		this.contentEl.scrollLeft += rect.left + hold.fx * rect.width - hold.screen.x;
+		this.scheduleCurrentPageUpdate();
+	}
+
+	// Scrolls sideways so `placeholder` is in the middle of the view. The
+	// fit buttons size the page to the view but only know how to hold the
+	// scroll position steady, which leaves a page in a far column off to the
+	// side; this is what puts it back in view.
+	private centerPageHorizontally(placeholder: HTMLElement): void {
+		const pane = this.contentEl.getBoundingClientRect();
+		const rect = placeholder.getBoundingClientRect();
+		this.contentEl.scrollLeft += rect.left + rect.width / 2 - (pane.left + this.contentEl.clientWidth / 2);
 		this.scheduleCurrentPageUpdate();
 	}
 
@@ -2107,6 +2123,6 @@ export class PdfAnnotateView extends FileView {
 		const placeholder = this.contentEl.querySelector<HTMLElement>(
 			`.inkling-pdf-page-placeholder[data-page-number="${pageNumber}"]`,
 		);
-		placeholder?.scrollIntoView({ block: 'center' });
+		placeholder?.scrollIntoView({ block: 'center', inline: 'center' });
 	}
 }
