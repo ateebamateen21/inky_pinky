@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { attachPointerGestures, findScrollParent } from '../../src/annotate/pointer';
-import { installSurfaceStubs, makePointerEvent } from '../harness/surface';
+import { findScrollParent } from '../../src/annotate/pointer';
+import { installSurfaceStubs } from '../harness/surface';
+import { attachCanvas as attach, detachAll, makeScroller, touch } from '../harness/touch';
 
 // Touch panning is done by hand (see pointer.ts), and in the 2D grid a page
 // can sit past the edge of the view, so one finger has to scroll sideways as
@@ -10,7 +11,6 @@ import { installSurfaceStubs, makePointerEvent } from '../harness/surface';
 // nothing there.
 
 const frames: FrameRequestCallback[] = [];
-let detach: (() => void) | null = null;
 
 beforeEach(() => {
 	installSurfaceStubs();
@@ -20,46 +20,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	detach?.();
-	detach = null;
+	detachAll();
 	document.body.innerHTML = '';
 });
 
-// A scroll container the size of `view`, holding content of size `content`,
-// whose scroll position clamps to what is there to scroll, as a real one
-// does. jsdom has no layout, so all of it is declared.
-function makeScroller(view: { width: number; height: number }, content: { width: number; height: number }): HTMLElement {
-	const scroller = document.body.appendChild(document.createElement('div'));
-	// Set separately: jsdom does not expand the `overflow` shorthand.
-	scroller.style.overflowX = 'auto';
-	scroller.style.overflowY = 'auto';
-	let top = 0;
-	let left = 0;
-	const clamp = (value: number, most: number) => Math.min(Math.max(value, 0), most);
-	Object.defineProperties(scroller, {
-		clientWidth: { value: view.width },
-		clientHeight: { value: view.height },
-		scrollWidth: { value: content.width },
-		scrollHeight: { value: content.height },
-		scrollTop: { get: () => top, set: (value: number) => (top = clamp(value, content.height - view.height)) },
-		scrollLeft: { get: () => left, set: (value: number) => (left = clamp(value, content.width - view.width)) },
-	});
-	return scroller;
-}
-
-// A page canvas inside placeholder and content boxes, as in the real view,
-// with the gestures attached.
-function attachCanvas(scroller: HTMLElement): HTMLCanvasElement {
-	const placeholder = scroller.appendChild(document.createElement('div'));
-	const content = placeholder.appendChild(document.createElement('div'));
-	const canvas = content.appendChild(document.createElement('canvas'));
-	detach = attachPointerGestures(canvas, () => ({}) as never);
-	return canvas;
-}
-
-function touch(canvas: HTMLElement, type: string, id: number, x: number, y: number, timeStamp?: number): void {
-	canvas.dispatchEvent(makePointerEvent(type, { pointerId: id, pointerType: 'touch', clientX: x, clientY: y, timeStamp }));
-}
+const attachCanvas = (scroller: HTMLElement): HTMLCanvasElement => attach(scroller).canvas;
 
 describe('one finger dragging', () => {
 	it('scrolls sideways as well as up and down', () => {

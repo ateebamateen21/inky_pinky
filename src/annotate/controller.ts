@@ -246,6 +246,14 @@ export interface AnnotationControllerOptions {
 	// fit buttons call it once they have sized the page, because the view
 	// zoom alone can leave it off to one side in the grid.
 	centerPage?: (placeholder: HTMLElement) => void;
+	// Picking a page up by holding fingers on it (the 2D grid): how many
+	// fingers it takes (0 for none, which is also what leaving it out means)
+	// and what to do as the hold starts, moves and ends. Points are in
+	// screen coordinates.
+	getHoldFingers?: () => 0 | 1 | 2;
+	onPageHoldStart?: (pageNumber: number, point: Point) => void;
+	onPageHoldMove?: (pageNumber: number, point: Point) => void;
+	onPageHoldEnd?: (pageNumber: number, point: Point, cancelled: boolean) => void;
 }
 
 // The shared annotation tool module — owns tool/color/width state, an
@@ -923,6 +931,10 @@ export class AnnotationController {
 			},
 			onZoomEnd: (scale) => this.options.onZoomSettled?.(pageNumber, scale),
 			isPageZoomLocked: () => this.pageZoomLocked,
+			getHoldFingers: () => this.options.getHoldFingers?.() ?? 0,
+			onHoldStart: (point) => this.options.onPageHoldStart?.(pageNumber, point),
+			onHoldMove: (point) => this.options.onPageHoldMove?.(pageNumber, point),
+			onHoldEnd: (point, cancelled) => this.options.onPageHoldEnd?.(pageNumber, point, cancelled),
 			// Offered only when the host can actually shrink its pages.
 			...(this.options.setViewZoom
 				? {
