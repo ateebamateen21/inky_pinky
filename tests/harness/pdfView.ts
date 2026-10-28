@@ -4,6 +4,9 @@ import { installSurfaceStubs, makePointerEvent } from './surface';
 import { ToolState, type Annotation } from '../../src/annotate';
 import type { ViewZoomHold } from '../../src/annotate/pointer';
 import type { FileMemoryStore } from '../../src/fileMemory';
+import { defaultSettings, type InklingSettings } from '../../src/settings';
+import type { Point } from '../../src/annotate';
+import type { PageLayout } from '../../src/layout/pageLayout';
 import { PdfAnnotateView } from '../../src/pdfView';
 
 // A PDF view with a file "open", built without a worker or pdf.js: the state
@@ -39,7 +42,9 @@ export function fakeViewport(scale: number) {
 	};
 }
 
-export function openPdfView(options: { toolState?: ToolState; writeDone?: () => Promise<void>; fileMemory?: FileMemoryStore } = {}) {
+export function openPdfView(
+	options: { toolState?: ToolState; writeDone?: () => Promise<void>; fileMemory?: FileMemoryStore; settings?: Partial<InklingSettings> } = {},
+) {
 	const writes: WrittenPage[][] = [];
 	let terminated = false;
 	const writer = {
@@ -62,7 +67,8 @@ export function openPdfView(options: { toolState?: ToolState; writeDone?: () => 
 	};
 	const leaf = { app: { vault, workspace: { on: () => ({}) } } };
 	const memory = options.fileMemory;
-	const view = new PdfAnnotateView(leaf as never, options.toolState ?? new ToolState(), undefined, memory ? () => memory : undefined);
+	const settings = { ...defaultSettings(), ...options.settings };
+	const view = new PdfAnnotateView(leaf as never, options.toolState ?? new ToolState(), () => settings, memory ? () => memory : undefined);
 	const file = new TFile('Notes/Handwritten.pdf');
 
 	const internals = view as unknown as {
@@ -87,6 +93,13 @@ export function openPdfView(options: { toolState?: ToolState; writeDone?: () => 
 		};
 		scrollToPage(page: number): void;
 		setViewZoom(zoom: number, hold?: ViewZoomHold): void;
+		gridMode: boolean;
+		layout: PageLayout | null;
+		liftPage(pageNumber: number, point: Point): void;
+		moveLiftedPage(point: Point): void;
+		dropLiftedPage(): unknown;
+		finishLift(cancelled: boolean): Promise<void>;
+		rebuildKeepingPage(file: unknown, page: number): Promise<void>;
 		markPageDirty(page: number): void;
 		pendingScrollToPage: number | null;
 		scrollToOpeningPage(file: TFile, pageCount: number): void;
@@ -140,6 +153,28 @@ export function openPdfView(options: { toolState?: ToolState; writeDone?: () => 
 			}
 			container.dispatchEvent(new Event('scroll'));
 		},
+		// The 2D grid's mode, and picking a page up in it.
+		setGridMode: (on: boolean) => {
+			internals.gridMode = on;
+		},
+		liftPage: (pageNumber: number, point: Point) => internals.liftPage(pageNumber, point),
+		moveLiftedPage: (point: Point) => internals.moveLiftedPage(point),
+		dropLiftedPage: () => internals.dropLiftedPage(),
+		// Letting go of the carried page. Rebuilding the grid needs a real PDF,
+		// so what it would be asked to rebuild is recorded and the rebuild is
+		// not run.
+		setLayout: (layout: PageLayout) => {
+			internals.layout = layout;
+		},
+		finishLift: (cancelled: boolean) => internals.finishLift(cancelled),
+		recordRebuilds: () => {
+			const calls: number[] = [];
+			internals.rebuildKeepingPage = (_file: unknown, page: number) => {
+				calls.push(page);
+				return Promise.resolve();
+			};
+			return calls;
+		},
 		// What the toolbar's navigation does: scrolling to a page, the whole-view
 		// zoom, and the two fit buttons.
 		scrollToPage: (page: number) => internals.scrollToPage(page),
@@ -186,6 +221,9 @@ export function openPdfView(options: { toolState?: ToolState; writeDone?: () => 
 				// The element the page was mounted in, for tests that need
 				// to say where it sits.
 				host,
+				// The canvas that takes the pointer events, for tests that
+				// drive touches on the page.
+				overlay,
 				drawStroke(points: Array<[number, number]>) {
 					points.forEach(([x, y], i) => {
 						overlay.dispatchEvent(makePointerEvent(i === 0 ? 'pointerdown' : 'pointermove', { clientX: x, clientY: y }));

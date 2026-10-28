@@ -39,6 +39,19 @@ export interface GestureHandlers {
 	// the toolbar's buttons are deliberate presses and ignore them.
 	isViewZoomLocked?(): boolean;
 	isPageZoomLocked?(): boolean;
+	// Picking a page up by holding fingers still on it, for the 2D grid.
+	// `getHoldFingers` is how many fingers it takes, read as a finger comes
+	// down: 0 (or absent) means the host offers no such thing, and nothing
+	// below this runs. Once the fingers have been held for HOLD_MS the hold
+	// claims the touch, so no scroll or pinch starts from it until every
+	// finger has lifted. `onHoldStart` and `onHoldMove` give where the
+	// fingers are (the midpoint, for two) in screen coordinates;
+	// `onHoldEnd` is fired when they lift, `cancelled` if the browser took
+	// the touch away instead.
+	getHoldFingers?(): 0 | 1 | 2;
+	onHoldStart?(point: Point): void;
+	onHoldMove?(point: Point): void;
+	onHoldEnd?(point: Point, cancelled: boolean): void;
 }
 
 // What a view-level zoom has to keep still: the point `fx`/`fy` of the way
@@ -178,6 +191,12 @@ const MOMENTUM_START_VELOCITY = 0.15; // px/ms — a slow release just stops
 // Velocity is smoothed across moves so one erratic final sample (common as
 // a finger lifts) can't throw the whole flick.
 const VELOCITY_SMOOTHING = 0.7;
+
+// How long fingers have to stay put to pick a page up, and how far they may
+// wander meanwhile and still count as staying put. A finger is never quite
+// still, and a hold that a one-pixel wobble could cancel would never fire.
+export const HOLD_MS = 500;
+const HOLD_TOLERANCE_PX = 10;
 
 let momentumFrame: number | null = null;
 
@@ -324,6 +343,13 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 	// always has both points available to compute a starting pinch distance
 	// and midpoint from.
 	const touches = new Map<number, Point>();
+	// A hold being watched for (`active` false: the fingers are down and have
+	// to stay still for HOLD_MS) or in progress (`active` true: it has
+	// claimed the touch). `ids` are the fingers that make it and `origins`
+	// where each came down; `last` is where the hold was when last seen (the
+	// one finger, or the midpoint of two), which is what is reported once a
+	// finger has lifted and is no longer there to ask.
+	let hold: { ids: number[]; origins: Point[]; last: Point; timer: number | null; active: boolean } | null = null;
 	let pinch: {
 		ids: [number, number];
 		startDistance: number;
@@ -401,6 +427,60 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 	// A second touch joining an existing one hands off from single-finger
 	// scroll-pan to two-finger pinch-zoom/pan instead — the two are mutually
 	// exclusive, never simultaneous.
+	// Where the fingers `ids` are now: the one finger, or the midpoint of two.
+	// Null if one of them is not down.
+	const holdPoint = (ids: number[]): Point | null => {
+		const first = touches.get(ids[0] ?? -1);
+		if (!first) return null;
+		if (ids.length < 2) return first;
+		const second = touches.get(ids[1] ?? -1);
+		return second ? midpoint(first, second) : null;
+	};
+
+	// Whether any finger of a hold has strayed from where it came down by more
+	// than the tolerance. Each finger on its own, not the midpoint: a pinch
+	// moves the fingers apart while the midpoint stays where it is.
+	const holdWandered = (current: NonNullable<typeof hold>): boolean =>
+		current.ids.some((id, index) => {
+			const now = touches.get(id);
+			const origin = current.origins[index];
+			return now !== undefined && origin !== undefined && distance(now, origin) > HOLD_TOLERANCE_PX;
+		});
+
+	const stopWatchingHold = (): void => {
+		if (hold?.timer != null) window.clearTimeout(hold.timer);
+		hold = null;
+	};
+
+	// Starts watching for a hold of the fingers now down, when the host wants
+	// one and exactly that many are down.
+	const watchForHold = (): void => {
+		const fingers = getHandlers()?.getHoldFingers?.() ?? 0;
+		if (fingers === 0 || touches.size !== fingers) return;
+		const ids = [...touches.keys()];
+		const start = holdPoint(ids);
+		if (!start) return;
+		const origins = ids.map((id) => touches.get(id) ?? start);
+		hold = { ids, origins, last: start, timer: null, active: false };
+		hold.timer = window.setTimeout(fireHold, HOLD_MS);
+	};
+
+	// The fingers stayed still long enough. The hold claims the touch: what
+	// they were about to become (a scroll, a pinch) is dropped, and nothing
+	// else starts from these fingers until they have all lifted.
+	const fireHold = (): void => {
+		const current = hold;
+		if (!current || current.active) return;
+		current.timer = null;
+		current.active = true;
+		touchPan = null;
+		pinch = null;
+		stopMomentum();
+		for (const id of current.ids) capturePointer(el, id);
+		current.last = holdPoint(current.ids) ?? current.last;
+		getHandlers()?.onHoldStart?.(current.last);
+	};
+
 	const startPinch = (): void => {
 		if (touchPan) {
 			try {
@@ -466,6 +546,15 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 
 		if (event.pointerType === 'touch') {
 			touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+			// A hold in progress has claimed the touch: another finger joining
+			// it starts nothing, not even a pinch.
+			if (hold?.active) {
+				event.preventDefault();
+				return;
+			}
+			// A change in how many fingers are down means these are not a hold
+			// any more (a second finger arriving is a pinch beginning).
+			if (hold && touches.size !== hold.ids.length) stopWatchingHold();
 			if (touches.size === 2) {
 				startPinch();
 				capturePointer(el, event.pointerId);
@@ -473,6 +562,7 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 			} else if (touches.size === 1) {
 				startTouchPan(event);
 			}
+			if (!hold) watchForHold();
 			return;
 		}
 
@@ -506,6 +596,26 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 	const onPointerMove = (event: PointerEvent) => {
 		if (event.pointerType === 'touch' && touches.has(event.pointerId)) {
 			touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+		}
+
+		if (event.pointerType === 'touch' && hold) {
+			if (hold.active) {
+				// Picked up: the fingers carry the page, and nothing else.
+				if (hold.ids.includes(event.pointerId)) {
+					hold.last = holdPoint(hold.ids) ?? hold.last;
+					getHandlers()?.onHoldMove?.(hold.last);
+				}
+				event.preventDefault();
+				return;
+			}
+			// Not yet: movement within the tolerance is the fingers settling,
+			// not a scroll or a pinch, so it is not acted on. Past it, this is
+			// a gesture of its own and the hold is off.
+			if (!holdWandered(hold)) {
+				event.preventDefault();
+				return;
+			}
+			stopWatchingHold();
 		}
 
 		if (pinch && pinch.ids.includes(event.pointerId)) {
@@ -645,6 +755,17 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 	const endGesture = (event: PointerEvent, cancelled: boolean) => {
 		if (event.pointerType === 'touch') touches.delete(event.pointerId);
 
+		// A hold ends when one of its fingers lifts. One still being watched
+		// for just stops, and the lift is whatever it would have been.
+		if (hold && hold.ids.includes(event.pointerId)) {
+			const { active, last } = hold;
+			stopWatchingHold();
+			if (active) {
+				getHandlers()?.onHoldEnd?.(last, cancelled);
+				return;
+			}
+		}
+
 		// Ends the whole pinch as soon as either finger lifts, rather than
 		// trying to seamlessly hand off to single-finger pan with the other —
 		// simpler, and a deliberate two-finger gesture ending with one finger
@@ -761,6 +882,9 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		touches.clear();
 		pinch = null;
 		touchPan = null;
+		// A page taken away mid-hold ends the hold as cancelled.
+		if (hold?.active) getHandlers()?.onHoldEnd?.(hold.last, true);
+		stopWatchingHold();
 		el.removeEventListener('pointerdown', onPointerDown);
 		el.removeEventListener('pointermove', onPointerMove);
 		el.removeEventListener('pointerup', onPointerUp);

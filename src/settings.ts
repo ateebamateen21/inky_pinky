@@ -36,6 +36,10 @@ export type PenButtonTool = 'none' | 'pen' | 'highlighter' | 'eraser' | 'select'
 const PEN_BUTTON_TOOLS = ['none', 'pen', 'highlighter', 'eraser', 'select'] as const;
 export type DarkInversion = 'off' | 'on' | 'follow-theme';
 
+// How many fingers it takes to pick a page up in the 2D layout. Both are
+// there to be tried against each other; one will probably go.
+export type PageHoldGesture = 'one-finger' | 'two-fingers';
+
 export interface InklingSettings {
 	defaultTemplate: TemplateStyle;
 	pageSize: PageSizeName;
@@ -69,6 +73,7 @@ export interface InklingSettings {
 	// the built-in viewer keeps its own idea of the page, which Inkling
 	// cannot read or update, and the two can disagree.
 	alwaysOpenInInkling: boolean;
+	pageHoldGesture: PageHoldGesture;
 	toolbarStartsCollapsed: boolean;
 	// Whether an ink block offers a caption to write.
 	//
@@ -115,6 +120,7 @@ export function defaultSettings(): InklingSettings {
 		// toolbar's contrast button flips it for the session either way.
 		darkInversion: 'off',
 		alwaysOpenInInkling: false,
+		pageHoldGesture: 'one-finger',
 		toolbarStartsCollapsed: false,
 		blockCaptions: false,
 		// Wherever the vault's images already go, so ink lands somewhere
@@ -229,6 +235,7 @@ export function normalizeSettings(raw: unknown): InklingSettings {
 		penButtonEraser: pick(source.penButtonEraser, PEN_BUTTON_TOOLS, defaults.penButtonEraser),
 		darkInversion: pick(source.darkInversion, ['off', 'on', 'follow-theme'] as const, defaults.darkInversion),
 		alwaysOpenInInkling: bool(source.alwaysOpenInInkling, defaults.alwaysOpenInInkling),
+		pageHoldGesture: pick(source.pageHoldGesture, ['one-finger', 'two-fingers'] as const, defaults.pageHoldGesture),
 		toolbarStartsCollapsed: bool(source.toolbarStartsCollapsed, defaults.toolbarStartsCollapsed),
 		blockCaptions: bool(source.blockCaptions, defaults.blockCaptions),
 		inkFileLocation: pick(source.inkFileLocation, INK_FILE_LOCATIONS, defaults.inkFileLocation),

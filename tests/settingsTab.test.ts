@@ -91,6 +91,16 @@ describe('the settings tab', () => {
 		expect(plugin.saveSettings).toHaveBeenCalledTimes(1);
 	});
 
+	it('changes how many fingers pick a page up, and saves it', async () => {
+		const { tab, plugin } = openTab();
+		expect(tab.getControlValue('pageHoldGesture')).toBe('one-finger');
+
+		await tab.setControlValue('pageHoldGesture', 'two-fingers');
+
+		expect(plugin.settings.pageHoldGesture).toBe('two-fingers');
+		expect(plugin.saveSettings).toHaveBeenCalledTimes(1);
+	});
+
 	it('refuses a value no option offers', async () => {
 		const { tab, plugin } = openTab({ darkInversion: 'on' });
 

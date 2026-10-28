@@ -150,6 +150,22 @@ describe('always open PDFs in Inkling', () => {
 	});
 });
 
+describe('hold to pick up a page', () => {
+	it('is one finger until told otherwise', () => {
+		expect(defaultSettings().pageHoldGesture).toBe('one-finger');
+	});
+
+	it('keeps either choice', () => {
+		expect(normalizeSettings({ pageHoldGesture: 'two-fingers' }).pageHoldGesture).toBe('two-fingers');
+		expect(normalizeSettings({ pageHoldGesture: 'one-finger' }).pageHoldGesture).toBe('one-finger');
+	});
+
+	it('falls back to one finger for anything else', () => {
+		expect(normalizeSettings({ pageHoldGesture: 'three-fingers' }).pageHoldGesture).toBe('one-finger');
+		expect(normalizeSettings({ pageHoldGesture: 2 }).pageHoldGesture).toBe('one-finger');
+	});
+});
+
 describe('block captions', () => {
 	it('are off until asked for', () => {
 		// A setting that changes how the plugin works the moment it is added

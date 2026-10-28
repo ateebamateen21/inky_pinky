@@ -51,6 +51,8 @@
 }
 
 .inkling-pdf-grid {
+	/* The drop marker below is placed inside it. */
+	position: relative;
 	display: grid;
 	grid-template-columns: repeat(var(--inkling-grid-cols, 1), max-content);
 	gap: calc(var(--size-4-3) * var(--inkling-view-zoom, 1));
@@ -78,6 +80,35 @@
    it off the left edge with it. */
 .is-grid .inkling-toolbar {
 	left: 0;
+}
+
+/* While a page is being carried, every other page is outlined as somewhere
+   it could go, and a bar marks the edge it would land beside right now. */
+.is-placing .inkling-pdf-page-placeholder:not(.is-lifted) {
+	outline: 2px dashed var(--interactive-accent);
+	outline-offset: -2px;
+}
+
+.inkling-drop-indicator {
+	position: absolute;
+	z-index: 4;
+	display: none;
+	pointer-events: none;
+	background: var(--interactive-accent);
+	border-radius: 3px;
+}
+
+.inkling-drop-indicator.is-active {
+	display: block;
+}
+
+/* A page picked up in the 2D grid: raised above the others and following the
+   fingers by however far they have moved (the view sets the two offsets). */
+.inkling-pdf-page-placeholder.is-lifted {
+	z-index: 5;
+	transform: translate(var(--inkling-lift-x, 0px), var(--inkling-lift-y, 0px)) scale(1.02);
+	box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+	opacity: 0.92;
 }
 
 .inkling-pdf-page-placeholder {

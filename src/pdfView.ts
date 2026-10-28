@@ -15,7 +15,8 @@ import { RENDER_SCALE, baseRenderScale, layoutRenderScale, zoomedRenderScale } f
 import { maxWriteIntervalMs } from './pdf/saveCadence';
 import { placeWithin } from './pdf/popoverPlacement';
 import { FileMemoryStore } from './fileMemory';
-import { defaultLayout } from './layout/pageLayout';
+import { defaultLayout, movePage, type PageLayout } from './layout/pageLayout';
+import { dropTargetAt, edgeScrollSpeed, type DropTarget } from './pdf/dropTarget';
 import { appendRows } from './pdf/pageGrid';
 import { allowCorePdfOnce } from './viewRedirect';
 import { defaultSettings, type InklingSettings } from './settings';
@@ -434,6 +435,22 @@ export class PdfAnnotateView extends FileView {
 	// off every time a file is opened.
 	private gridMode = false;
 	private switchingLayout = false;
+	// How the pages are laid out now, as drawn. Null until a file is loaded.
+	private layout: PageLayout | null = null;
+	// The page being carried in the grid: where the fingers were when it was
+	// picked up and where the view was scrolled to then (the page rides the
+	// scroll, so it has to be allowed for), where the fingers are now, and
+	// where it would land if let go now.
+	private lifted: {
+		page: number;
+		placeholder: HTMLElement;
+		start: Point;
+		startScroll: Point;
+		point: Point;
+		target: DropTarget | null;
+	} | null = null;
+	private dropIndicator: HTMLElement | null = null;
+	private autoScrollFrame: number | null = null;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -487,6 +504,12 @@ export class PdfAnnotateView extends FileView {
 			isInverted: () => this.isInverted(),
 			onToggleGrid: () => void this.toggleGridMode(),
 			isGridMode: () => this.gridMode,
+			// Picking a page up needs the 2D grid; elsewhere there is nothing
+			// to pick up and the fingers keep scrolling and zooming as ever.
+			getHoldFingers: () => (this.gridMode ? (this.getSettings().pageHoldGesture === 'two-fingers' ? 2 : 1) : 0),
+			onPageHoldStart: (pageNumber, point) => this.liftPage(pageNumber, point),
+			onPageHoldMove: (_pageNumber, point) => this.moveLiftedPage(point),
+			onPageHoldEnd: (_pageNumber, _point, cancelled) => void this.finishLift(cancelled),
 		});
 	}
 
@@ -943,6 +966,7 @@ export class PdfAnnotateView extends FileView {
 		// sit in a grid box of their own that places each page in its cell.
 		const layout =
 			(this.gridMode ? this.getFileMemory().getLayout(file.path, pdf.numPages) : null) ?? defaultLayout(pdf.numPages);
+		this.layout = layout;
 		this.contentEl.toggleClass('is-grid', this.gridMode);
 		const host = this.gridMode ? this.contentEl.createDiv({ cls: 'inkling-pdf-grid' }) : this.contentEl;
 		const columns = appendRows(host, layout, (row, pageNumber, position) => {
@@ -1167,6 +1191,7 @@ export class PdfAnnotateView extends FileView {
 	}
 
 	private teardown() {
+		this.dropLiftedPage();
 		// A new file starts at fit-to-width, not at the last file's shrink.
 		this.controller.applyViewZoom(1);
 		this.observer?.disconnect();
@@ -2055,27 +2080,166 @@ export class PdfAnnotateView extends FileView {
 		return this.contentEl.hasClass('is-inverted');
 	}
 
+	// A page picked up in the grid: raised, following the fingers, and with
+	// the places it could go marked. The view scrolls on its own when the
+	// fingers are carried to its edge, to reach places that are out of view.
+	private liftPage(pageNumber: number, point: Point): void {
+		this.dropLiftedPage();
+		const placeholder = this.contentEl.querySelector<HTMLElement>(
+			`.inkling-pdf-page-placeholder[data-page-number="${pageNumber}"]`,
+		);
+		if (!placeholder) return;
+		placeholder.addClass('is-lifted');
+		this.contentEl.addClass('is-placing');
+		this.lifted = {
+			page: pageNumber,
+			placeholder,
+			start: point,
+			startScroll: { x: this.contentEl.scrollLeft, y: this.contentEl.scrollTop },
+			point,
+			target: null,
+		};
+		this.autoScrollFrame = window.requestAnimationFrame(() => this.autoScrollLiftedPage());
+	}
+
+	private moveLiftedPage(point: Point): void {
+		const lifted = this.lifted;
+		if (!lifted) return;
+		lifted.point = point;
+		// The page rides the scroll like everything else in the view, so it
+		// is carried by how far the fingers have moved plus how far the view
+		// has scrolled since it was picked up.
+		const x = point.x - lifted.start.x + (this.contentEl.scrollLeft - lifted.startScroll.x);
+		const y = point.y - lifted.start.y + (this.contentEl.scrollTop - lifted.startScroll.y);
+		lifted.placeholder.setCssProps({ '--inkling-lift-x': `${x}px`, '--inkling-lift-y': `${y}px` });
+
+		lifted.target = dropTargetAt(point, this.pageBoxes(lifted.page));
+		this.showDropIndicator(lifted.target);
+	}
+
+	// The boxes on screen of every page but the carried one.
+	private pageBoxes(except: number): { page: number; left: number; top: number; right: number; bottom: number }[] {
+		const boxes: { page: number; left: number; top: number; right: number; bottom: number }[] = [];
+		for (const placeholder of Array.from(this.contentEl.querySelectorAll<HTMLElement>('.inkling-pdf-page-placeholder'))) {
+			const page = Number(placeholder.dataset[PAGE_NUMBER_ATTR]);
+			if (page === except) continue;
+			const rect = placeholder.getBoundingClientRect();
+			boxes.push({ page, left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom });
+		}
+		return boxes;
+	}
+
+	// A bar along the edge of the page the carried one would go beside, drawn
+	// in the grid so it scrolls with it. Gone when there is nowhere to drop.
+	private showDropIndicator(target: DropTarget | null): void {
+		if (!target) {
+			this.dropIndicator?.removeClass('is-active');
+			return;
+		}
+		const placeholder = this.contentEl.querySelector<HTMLElement>(
+			`.inkling-pdf-page-placeholder[data-page-number="${target.page}"]`,
+		);
+		const host = this.contentEl.querySelector<HTMLElement>('.inkling-pdf-grid') ?? this.contentEl;
+		if (!placeholder) return;
+
+		const indicator = this.dropIndicator ?? host.createDiv({ cls: 'inkling-drop-indicator' });
+		this.dropIndicator = indicator;
+		const rect = placeholder.getBoundingClientRect();
+		const origin = host.getBoundingClientRect();
+		const bar = 6;
+		const across = target.side === 'left' || target.side === 'right';
+		const x = (target.side === 'right' ? rect.right : rect.left) - origin.left;
+		const y = (target.side === 'below' ? rect.bottom : rect.top) - origin.top;
+		indicator.setCssProps({
+			left: `${across ? x - bar / 2 : rect.left - origin.left}px`,
+			top: `${across ? rect.top - origin.top : y - bar / 2}px`,
+			width: `${across ? bar : rect.width}px`,
+			height: `${across ? rect.height : bar}px`,
+		});
+		indicator.addClass('is-active');
+	}
+
+	// Each frame while a page is carried: scrolls the view when the fingers
+	// are near its edge, and keeps the page and the marked place in step
+	// with what that moved.
+	private autoScrollLiftedPage(): void {
+		const lifted = this.lifted;
+		if (!lifted) return;
+		const pane = this.contentEl.getBoundingClientRect();
+		const dx = edgeScrollSpeed(lifted.point.x - pane.left, pane.width);
+		const dy = edgeScrollSpeed(lifted.point.y - pane.top, pane.height);
+		if (dx !== 0 || dy !== 0) {
+			this.contentEl.scrollLeft += dx;
+			this.contentEl.scrollTop += dy;
+			this.moveLiftedPage(lifted.point);
+		}
+		this.autoScrollFrame = window.requestAnimationFrame(() => this.autoScrollLiftedPage());
+	}
+
+	// Puts the carried page down where it was, and returns what was being
+	// carried and where it would have landed.
+	private dropLiftedPage(): { page: number; target: DropTarget | null } | null {
+		const lifted = this.lifted;
+		if (!lifted) return null;
+
+		if (this.autoScrollFrame !== null) window.cancelAnimationFrame(this.autoScrollFrame);
+		this.autoScrollFrame = null;
+		this.dropIndicator?.remove();
+		this.dropIndicator = null;
+		this.contentEl.removeClass('is-placing');
+		lifted.placeholder.removeClass('is-lifted');
+		lifted.placeholder.setCssProps({ '--inkling-lift-x': '', '--inkling-lift-y': '' });
+		this.lifted = null;
+		return { page: lifted.page, target: lifted.target };
+	}
+
+	// The fingers let go. Over a place a page can go it moves there; over
+	// nothing, or when the touch was taken away, it stays where it was.
+	private async finishLift(cancelled: boolean): Promise<void> {
+		const dropped = this.dropLiftedPage();
+		if (!dropped || cancelled || !dropped.target) return;
+		await this.movePageInLayout(dropped.page, dropped.target);
+	}
+
+	// Moves a page to its new place in the layout, remembers the layout for
+	// next time, and redraws the grid with the page in view.
+	private async movePageInLayout(page: number, target: DropTarget): Promise<void> {
+		const file = this.currentFile;
+		const layout = this.layout;
+		if (!file || !layout || this.switchingLayout) return;
+
+		const moved = movePage(layout, page, target.side, target.page);
+		if (JSON.stringify(moved) === JSON.stringify(layout)) return;
+		this.getFileMemory().setLayout(file.path, moved, moved.cells.length);
+		await this.rebuildKeepingPage(file, page);
+	}
+
+	// Rebuilds the pages, as adding a page does, so unsaved ink is saved
+	// first, and puts the reader on `page` afterwards.
+	private async rebuildKeepingPage(file: TFile, page: number): Promise<void> {
+		this.switchingLayout = true;
+		try {
+			await this.flushAnnotationsIfDirty(file);
+			await this.onLoadFile(file);
+			this.scrollToPage(page);
+		} catch (error) {
+			console.error('Inkling: failed to redraw the page layout.', error);
+			new Notice('Inkling: could not redraw the page layout.');
+		} finally {
+			this.switchingLayout = false;
+			this.controller.refreshUi();
+		}
+	}
+
 	// Switches between the plain column of pages and the 2D grid. The pages
 	// are rebuilt, as adding a page does, so unsaved ink is saved first and
 	// the reader is put back on the page they were on.
 	private async toggleGridMode(): Promise<void> {
 		const file = this.currentFile;
 		if (!file || this.switchingLayout) return;
-		this.switchingLayout = true;
-
-		try {
-			await this.flushAnnotationsIfDirty(file);
-			const page = this.currentPageNumber;
-			this.gridMode = !this.gridMode;
-			await this.onLoadFile(file);
-			this.scrollToPage(page);
-		} catch (error) {
-			console.error('Inkling: failed to switch the page layout.', error);
-			new Notice('Inkling: could not switch the page layout.');
-		} finally {
-			this.switchingLayout = false;
-			this.controller.refreshUi();
-		}
+		const page = this.currentPageNumber;
+		this.gridMode = !this.gridMode;
+		await this.rebuildKeepingPage(file, page);
 	}
 
 	// Leaves something visible instead of the blank/black screen a failed

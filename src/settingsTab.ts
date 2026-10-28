@@ -136,6 +136,19 @@ export class InklingSettingTab extends PluginSettingTab {
 				heading: 'Reading and editing',
 				items: [
 					{
+						name: 'Hold to pick up a page (2D layout)',
+						desc:
+							'How many fingers to hold still on a page for half a second to pick it up in the 2D layout. Both are here to be tried; ' +
+							'pick whichever feels better.',
+						aliases: ['grid', 'move pages', 'long press', 'drag'],
+						control: {
+							type: 'dropdown',
+							key: 'pageHoldGesture',
+							defaultValue: defaults.pageHoldGesture,
+							options: { 'one-finger': 'One finger', 'two-fingers': 'Two fingers' },
+						},
+					},
+					{
 						name: 'Always open PDFs in Inkling',
 						desc:
 							'Open a PDF straight in Inkling instead of Obsidian’s built-in viewer. Inkling only remembers the page you were on in ' +
