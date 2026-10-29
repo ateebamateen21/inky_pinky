@@ -5,6 +5,8 @@ import { notices, TFile } from '../harness/obsidian';
 import { installSurfaceStubs } from '../harness/surface';
 import { ToolState } from '../../src/annotate';
 import { PdfAnnotateView } from '../../src/pdfView';
+import { FileMemoryStore } from '../../src/fileMemory';
+import type { PageLayout } from '../../src/layout/pageLayout';
 import { defaultSettings, writeSetting, pageTemplateKey, type InklingSettings } from '../../src/settings';
 
 // The real addPage, against a real PDF held in memory: portrait Letter, a
@@ -35,7 +37,7 @@ async function operatorsOnPage(bytes: ArrayBuffer, pageNumber: number): Promise<
 	return (await (await doc.getPage(pageNumber)).getOperatorList()).fnArray.length;
 }
 
-async function open(settings: InklingSettings, currentPage = 2) {
+async function open(settings: InklingSettings, currentPage = 2, memory?: FileMemoryStore) {
 	const original = await threePagePdf();
 	let written: ArrayBuffer | null = null;
 	const vault = {
@@ -46,7 +48,7 @@ async function open(settings: InklingSettings, currentPage = 2) {
 		adapter: { stat: vi.fn(async () => ({ size: written?.byteLength ?? 0 })) },
 	};
 	const leaf = { app: { vault, workspace: { on: () => ({}) } } };
-	const view = new PdfAnnotateView(leaf as never, new ToolState(), () => settings);
+	const view = new PdfAnnotateView(leaf as never, new ToolState(), () => settings, memory ? () => memory : undefined);
 
 	const internals = view as unknown as {
 		currentFile: TFile;
@@ -54,6 +56,7 @@ async function open(settings: InklingSettings, currentPage = 2) {
 		flushAnnotationsIfDirty: () => Promise<void>;
 		onLoadFile: ReturnType<typeof vi.fn>;
 		scrollToPage: ReturnType<typeof vi.fn>;
+		controller: { applyViewZoom(zoom: number): void; getViewZoom(): number };
 		addPage(templateId?: string): Promise<void>;
 	};
 	internals.currentFile = new TFile('Notes/Lecture.pdf');
@@ -88,6 +91,67 @@ describe('adding a page to a PDF', () => {
 		expect(doc.getPage(2).getSize()).toEqual({ width: 960, height: 540 });
 		expect(internals.onLoadFile).toHaveBeenCalledTimes(1);
 		expect(internals.scrollToPage).toHaveBeenCalledWith(2);
+	});
+
+	it('leaves the zoom the reader was at, though loading a file starts at fit-to-width', async () => {
+		const { add, internals } = await open(withDefault('blank'), 1);
+		internals.controller.applyViewZoom(0.5);
+		// What loading does to the view, as teardown does it.
+		internals.onLoadFile = vi.fn(async () => {
+			internals.controller.applyViewZoom(1);
+		});
+
+		await add();
+
+		expect(internals.controller.getViewZoom()).toBe(0.5);
+	});
+
+	// The three pages as a layout: 2 beside 1, and 3 on a row of its own.
+	const arranged: PageLayout = {
+		cells: [
+			{ row: 0, col: 0 },
+			{ row: 0, col: 1 },
+			{ row: 1, col: 0 },
+		],
+	};
+
+	it('keeps a saved layout, putting the new page right of the page it follows', async () => {
+		const memory = new FileMemoryStore();
+		memory.setLayout('Notes/Lecture.pdf', arranged, 3);
+		const { add } = await open(withDefault('blank'), 2, memory);
+
+		await add();
+
+		// The new page is page 3, right of page 2; the old page 3 is now page 4.
+		expect(memory.getLayout('Notes/Lecture.pdf', 4)).toEqual({
+			cells: [
+				{ row: 0, col: 0 },
+				{ row: 0, col: 1 },
+				{ row: 0, col: 2 },
+				{ row: 1, col: 0 },
+			],
+		});
+		expect(memory.getLayout('Notes/Lecture.pdf', 3)).toBeNull();
+	});
+
+	it('stores nothing for a file with no saved layout', async () => {
+		const memory = new FileMemoryStore();
+		const { add } = await open(withDefault('blank'), 2, memory);
+
+		await add();
+
+		expect(memory.toJSON().files).toEqual({});
+	});
+
+	it('leaves a saved layout that never fitted the file alone', async () => {
+		const memory = new FileMemoryStore();
+		memory.setLayout('Notes/Lecture.pdf', { cells: [{ row: 0, col: 0 }, { row: 0, col: 1 }] }, 2);
+		const before = JSON.stringify(memory.toJSON());
+		const { add } = await open(withDefault('blank'), 2, memory);
+
+		await add();
+
+		expect(JSON.stringify(memory.toJSON())).toBe(before);
 	});
 
 	it('matches the size of the page it follows, whatever the paper-size setting says', async () => {

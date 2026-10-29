@@ -291,6 +291,33 @@ describe('carrying a page to a new place', () => {
 	});
 });
 
+// Redrawing the grid is a reload of the same document, so it has to leave the
+// reader's zoom alone; loading a file otherwise starts it at fit-to-width.
+describe('redrawing the grid', () => {
+	it('keeps the zoom the reader was at, and goes to the page', async () => {
+		const view = openPdfView();
+		await view.open();
+		view.applyViewZoom(0.5);
+
+		// What loading does to the view, as teardown does it.
+		const scrolled = await view.rebuild(7, async () => {
+			view.applyViewZoom(1);
+		});
+
+		expect(view.viewZoom()).toBe(0.5);
+		expect(scrolled).toEqual([7]);
+	});
+
+	it('leaves fit-to-width alone', async () => {
+		const view = openPdfView();
+		await view.open();
+
+		await view.rebuild(2, async () => undefined);
+
+		expect(view.viewZoom()).toBe(1);
+	});
+});
+
 // Carrying a page to the edge of the view scrolls it, so places that are out
 // of view can be reached, and the page stays under the fingers as it does.
 describe('carrying a page to the edge of the view', () => {

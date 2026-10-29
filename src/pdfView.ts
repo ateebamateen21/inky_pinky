@@ -15,7 +15,7 @@ import { RENDER_SCALE, baseRenderScale, layoutRenderScale, zoomedRenderScale } f
 import { maxWriteIntervalMs } from './pdf/saveCadence';
 import { placeWithin } from './pdf/popoverPlacement';
 import { FileMemoryStore } from './fileMemory';
-import { defaultLayout, movePage, type PageLayout } from './layout/pageLayout';
+import { defaultLayout, insertPage, movePage, type PageLayout } from './layout/pageLayout';
 import { dropTargetAt, edgeScrollSpeed, type DropTarget } from './pdf/dropTarget';
 import { appendRows } from './pdf/pageGrid';
 import { allowCorePdfOnce } from './viewRedirect';
@@ -1805,7 +1805,8 @@ export class PdfAnnotateView extends FileView {
 
 			// currentPageNumber is 1-based; as a 0-based insertion index that
 			// is exactly "right after the page the user is currently on".
-			const insertIndex = Math.min(this.currentPageNumber, pdfDoc.getPageCount());
+			const pagesBefore = pdfDoc.getPageCount();
+			const insertIndex = Math.min(this.currentPageNumber, pagesBefore);
 			// The one picked from the menu; else the default from settings,
 			// which is also what a pick that no longer exists gets (a
 			// template can be deleted while the menu is open). The list is
@@ -1825,7 +1826,17 @@ export class PdfAnnotateView extends FileView {
 			await writeBinarySafely(this.app.vault, file, toArrayBuffer(updatedBytes));
 
 			const newPageNumber = insertIndex + 1;
-			await this.onLoadFile(file);
+			// A saved layout is for the number of pages the file had, and
+			// would no longer fit with one more, which loses the arrangement.
+			// The new page goes right of the page it follows, and every later
+			// page keeps its place under its new number. Done whichever view
+			// the page is added from, or adding one from the plain column
+			// would throw away a grid laid out earlier.
+			const saved = this.getFileMemory().getLayout(file.path, pagesBefore);
+			if (saved) {
+				this.getFileMemory().setLayout(file.path, insertPage(saved, newPageNumber, 'right', insertIndex), pagesBefore + 1);
+			}
+			await this.reloadKeepingZoom(file);
 			this.scrollToPage(newPageNumber);
 		} catch (error) {
 			console.error('Inkling: failed to add a page.', error);
@@ -2214,13 +2225,24 @@ export class PdfAnnotateView extends FileView {
 		await this.rebuildKeepingPage(file, page);
 	}
 
+	// Loads the file again, as a rebuild of the same document, and puts the
+	// view back at the zoom it was at. Loading a file starts it at
+	// fit-to-width, which is right for opening one and wrong for redrawing
+	// the one being read: moving a page or adding one should not undo the
+	// zoom the reader chose. (The zoom within each page does start again.)
+	private async reloadKeepingZoom(file: TFile): Promise<void> {
+		const zoom = this.controller.getViewZoom();
+		await this.onLoadFile(file);
+		if (zoom !== 1) this.controller.applyViewZoom(zoom);
+	}
+
 	// Rebuilds the pages, as adding a page does, so unsaved ink is saved
 	// first, and puts the reader on `page` afterwards.
 	private async rebuildKeepingPage(file: TFile, page: number): Promise<void> {
 		this.switchingLayout = true;
 		try {
 			await this.flushAnnotationsIfDirty(file);
-			await this.onLoadFile(file);
+			await this.reloadKeepingZoom(file);
 			this.scrollToPage(page);
 		} catch (error) {
 			console.error('Inkling: failed to redraw the page layout.', error);

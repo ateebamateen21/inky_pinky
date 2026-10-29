@@ -90,6 +90,8 @@ export function openPdfView(
 			getCurrentPageNumber(): number;
 			fitWidth(): void;
 			fitPage(): void;
+			getViewZoom(): number;
+			applyViewZoom(zoom: number): void;
 		};
 		scrollToPage(page: number): void;
 		setViewZoom(zoom: number, hold?: ViewZoomHold): void;
@@ -100,6 +102,8 @@ export function openPdfView(
 		dropLiftedPage(): unknown;
 		finishLift(cancelled: boolean): Promise<void>;
 		rebuildKeepingPage(file: unknown, page: number): Promise<void>;
+		onLoadFile(file: unknown): Promise<void>;
+		flushAnnotationsIfDirty(file: unknown): Promise<void>;
 		markPageDirty(page: number): void;
 		pendingScrollToPage: number | null;
 		scrollToOpeningPage(file: TFile, pageCount: number): void;
@@ -167,6 +171,22 @@ export function openPdfView(
 			internals.layout = layout;
 		},
 		finishLift: (cancelled: boolean) => internals.finishLift(cancelled),
+		// Redraws the grid for real, with loading the file replaced by `reload`
+		// (which has to do what a load does to the view, such as going back to
+		// fit-to-width). Returns the pages it was then asked to scroll to.
+		rebuild: async (page: number, reload: () => Promise<void>) => {
+			const scrolled: number[] = [];
+			internals.onLoadFile = reload;
+			internals.flushAnnotationsIfDirty = () => Promise.resolve();
+			internals.scrollToPage = (target: number) => {
+				scrolled.push(target);
+			};
+			await internals.rebuildKeepingPage(file, page);
+			return scrolled;
+		},
+		// The whole-view zoom, as the toolbar's buttons and a pinch set it.
+		viewZoom: () => internals.controller.getViewZoom(),
+		applyViewZoom: (zoom: number) => internals.controller.applyViewZoom(zoom),
 		recordRebuilds: () => {
 			const calls: number[] = [];
 			internals.rebuildKeepingPage = (_file: unknown, page: number) => {
