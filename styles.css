@@ -54,7 +54,10 @@
 	/* The drop marker below is placed inside it. */
 	position: relative;
 	display: grid;
-	grid-template-columns: repeat(var(--inkling-grid-cols, 1), max-content);
+	/* Every column as wide as a page that fits the pane (the view sets the
+	   track width), so a page not drawn yet cannot stretch its column; the
+	   columns size to their pages only until the view knows that width. */
+	grid-template-columns: repeat(var(--inkling-grid-cols, 1), var(--inkling-col-track, max-content));
 	gap: calc(var(--size-4-3) * var(--inkling-view-zoom, 1));
 	align-items: start;
 	/* At least the pane wide, so a grid that fits is centred like the plain
@@ -71,9 +74,10 @@
 .inkling-pdf-grid .inkling-pdf-page-placeholder {
 	grid-row: var(--inkling-row);
 	grid-column: var(--inkling-col);
-	/* The percentage limit below is of the grid cell here, which is as wide
-	   as this page: no limit at all. */
-	max-width: none;
+	/* The percentage limit below is of the page's own cell and already has
+	   the zoom in it, so the limit here is the cell itself: a page not drawn
+	   yet, which would be wider, is brought down to the column. */
+	max-width: 100%;
 }
 
 /* The toolbar sits in the scroller, so a grid scrolled sideways would carry

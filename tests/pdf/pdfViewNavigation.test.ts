@@ -111,3 +111,52 @@ describe('the fit buttons', () => {
 		expect(view.view.contentEl.scrollLeft).toBe(0);
 	});
 });
+
+// The grid's columns are all as wide as a page that fits the pane. Pages not
+// drawn yet are sized from the first page and can be wider than that, which
+// must not widen their column.
+describe('the width of the grid columns', () => {
+	async function gridIn(paneWidth: number) {
+		const view = openPdfView();
+		await view.open();
+		giveScrollPosition(view.view.contentEl, paneWidth, 1000);
+		const grid = view.view.contentEl.appendChild(document.createElement('div'));
+		grid.className = 'inkling-pdf-grid';
+		return { view, grid };
+	}
+
+	it('is the width a page has when it fits the pane, with the zoom applied', async () => {
+		const { view, grid } = await gridIn(900);
+
+		view.updateGridColumnWidth();
+
+		expect(grid.style.getPropertyValue('--inkling-col-track')).toBe('calc(900px * var(--inkling-view-zoom, 1))');
+	});
+
+	it('follows the pane when it changes width', async () => {
+		const { view, grid } = await gridIn(900);
+		view.updateGridColumnWidth();
+
+		giveScrollPosition(view.view.contentEl, 600, 1000);
+		view.updateGridColumnWidth();
+
+		expect(grid.style.getPropertyValue('--inkling-col-track')).toBe('calc(600px * var(--inkling-view-zoom, 1))');
+	});
+
+	it('is left for the columns to work out while the pane has no width', async () => {
+		const { view, grid } = await gridIn(0);
+
+		view.updateGridColumnWidth();
+
+		expect(grid.style.getPropertyValue('--inkling-col-track')).toBe('');
+	});
+
+	it('does nothing in the plain column, where there is no grid', async () => {
+		const view = openPdfView();
+		await view.open();
+		giveScrollPosition(view.view.contentEl, 900, 1000);
+
+		expect(() => view.updateGridColumnWidth()).not.toThrow();
+	});
+});
+

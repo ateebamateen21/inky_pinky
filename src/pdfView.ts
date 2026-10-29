@@ -985,6 +985,7 @@ export class PdfAnnotateView extends FileView {
 			observer.observe(placeholder);
 		});
 		if (this.gridMode) host.setCssProps({ '--inkling-grid-cols': String(columns) });
+		this.updateGridColumnWidth();
 
 		// Covers setEphemeralState firing *before* this — its own immediate
 		// scrollToPage call would have found no placeholders yet at that
@@ -1167,6 +1168,22 @@ export class PdfAnnotateView extends FileView {
 			this.rescalePages(available);
 			this.controller.rebaseViewZoom(paneRatio);
 		});
+		this.updateGridColumnWidth();
+	}
+
+	// Gives every column of the grid the width a page has when it fits the
+	// pane, whether the pages in it have been drawn yet or not. A page that
+	// has not been drawn is as wide as the first page was when it was
+	// measured, which can be well wider than the pane, and with columns as
+	// wide as their widest page it would stretch its column until it was
+	// drawn. In the plain column a limit on each page's width hid this.
+	// Nothing is set while the pane has no width to give (it is not showing),
+	// and the columns then size themselves to their pages.
+	private updateGridColumnWidth(): void {
+		const grid = this.contentEl.querySelector<HTMLElement>('.inkling-pdf-grid');
+		const available = this.availablePageWidth();
+		if (!grid || available <= 0) return;
+		grid.setCssProps({ '--inkling-col-track': `calc(${available}px * var(--inkling-view-zoom, 1))` });
 	}
 
 	// The view zoom at which `placeholder`'s whole page fits the pane's

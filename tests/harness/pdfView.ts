@@ -100,6 +100,7 @@ export function openPdfView(
 		liftPage(pageNumber: number, point: Point): void;
 		moveLiftedPage(point: Point): void;
 		dropLiftedPage(): unknown;
+		updateGridColumnWidth(): void;
 		finishLift(cancelled: boolean): Promise<void>;
 		rebuildKeepingPage(file: unknown, page: number): Promise<void>;
 		onLoadFile(file: unknown): Promise<void>;
@@ -171,6 +172,8 @@ export function openPdfView(
 			internals.layout = layout;
 		},
 		finishLift: (cancelled: boolean) => internals.finishLift(cancelled),
+		// Sets the grid's column width from the pane's.
+		updateGridColumnWidth: () => internals.updateGridColumnWidth(),
 		// Redraws the grid for real, with loading the file replaced by `reload`
 		// (which has to do what a load does to the view, such as going back to
 		// fit-to-width). Returns the pages it was then asked to scroll to.
