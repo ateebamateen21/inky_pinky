@@ -222,6 +222,13 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 	// it never changes what the plus does. Both are hidden where pages
 	// cannot be added (an ink block in a note) and both are disabled on a
 	// document that cannot be written to.
+	// Next to the buttons that add a page, since it is their opposite. The
+	// trash can is already Delete selection, and Clear page only wipes ink.
+	const deletePageButton = iconButton(
+		'inkling-tool-button',
+		{ icon: 'file-minus', fallback: '－', title: 'Delete page, and everything on it' },
+		() => controller.deletePage(),
+	);
 	const addPageButton = iconButton(
 		'inkling-tool-button',
 		{ icon: 'file-plus', fallback: '＋', title: 'Add page (default template)' },
@@ -270,7 +277,7 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		{ icon: 'layout-grid', fallback: '▦', title: '2D page layout' },
 		() => controller.toggleGrid(),
 	);
-	actionGroup.append(undoButton, redoButton, separator(), deleteButton, clearPageButton, addPageButton, addPageMenuButton, invertButton, navButton, gridButton);
+	actionGroup.append(undoButton, redoButton, separator(), deleteButton, clearPageButton, addPageButton, addPageMenuButton, deletePageButton, invertButton, navButton, gridButton);
 
 	// Readouts, not controls — pushed to the far end of the strip (see
 	// .inkling-toolbar-status) so the things you press stay together on the
@@ -381,7 +388,7 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		const noteButton = toolButtons.get('note');
 		if (noteButton && !controller.canTakeNotes()) noteButton.hidden = true;
 		for (const group of [colorGroup, widthGroup, statusGroup]) group.hidden = collapsed;
-		for (const button of [redoButton, deleteButton, clearPageButton, addPageButton, addPageMenuButton, invertButton, navButton, gridButton]) button.hidden = collapsed;
+		for (const button of [redoButton, deleteButton, clearPageButton, addPageButton, addPageMenuButton, deletePageButton, invertButton, navButton, gridButton]) button.hidden = collapsed;
 		setIconOrText(collapseButton, collapsed ? 'chevrons-down' : 'chevrons-up', collapsed ? '⌄' : '⌃');
 		fullscreenButton.hidden = !controller.supportsFullscreen();
 		const fullscreen = controller.isFullscreen();
@@ -484,6 +491,7 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		if (!collapsed) {
 			addPageButton.hidden = !controller.getCanManagePages();
 			addPageMenuButton.hidden = addPageButton.hidden;
+			deletePageButton.hidden = addPageButton.hidden;
 			navButton.hidden = !controller.canToggleNavigation();
 			invertButton.hidden = !controller.canInvert();
 			gridButton.hidden = !controller.canToggleGrid();
@@ -492,6 +500,7 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		gridButton.toggleClass('is-active', controller.isGridMode());
 		gridButton.setAttribute('aria-pressed', String(controller.isGridMode()));
 		addPageButton.disabled = readOnly;
+		deletePageButton.disabled = readOnly;
 		addPageMenuButton.disabled = readOnly;
 	};
 	refresh();

@@ -106,6 +106,12 @@
 	display: block;
 }
 
+/* The page the delete question is about, so there is no doubt which it is. */
+.inkling-pdf-page-placeholder.is-deleting {
+	outline: 4px solid var(--text-error);
+	outline-offset: -4px;
+}
+
 /* A page picked up in the 2D grid: raised above the others and following the
    fingers by however far they have moved (the view sets the two offsets). */
 .inkling-pdf-page-placeholder.is-lifted {

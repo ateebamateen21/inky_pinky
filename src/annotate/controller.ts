@@ -154,6 +154,8 @@ export interface AnnotationControllerOptions {
 	history?: HistoryStack;
 	// The template to add, by id; omitted means the default one.
 	onAddPage?: (templateId?: string) => void;
+	// Deletes the page being read, after asking.
+	onDeletePage?: () => void;
 	// What the toolbar's Add page menu lists. Read each time the menu opens,
 	// not once, so a template added in settings is there without reopening
 	// the PDF.
@@ -826,6 +828,10 @@ export class AnnotationController {
 	}
 
 	// ---- Page-level actions ----
+
+	deletePage(): void {
+		this.options.onDeletePage?.();
+	}
 
 	addPage(templateId?: string): void {
 		this.options.onAddPage?.(templateId);

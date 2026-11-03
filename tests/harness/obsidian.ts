@@ -121,7 +121,15 @@ export class Plugin extends Component {}
 export const openedModals: Modal[] = [];
 
 export class Modal {
+	// What a test needs to look at what a modal puts in itself. Nothing is
+	// shown, and opening it does not build its contents (a test calls onOpen).
+	modalEl = document.createElement('div');
+	contentEl = document.createElement('div');
+	titleEl = document.createElement('div');
 	constructor(public app: unknown) {}
+	setTitle(title: string): void {
+		this.titleEl.textContent = title;
+	}
 	open(): void {
 		openedModals.push(this);
 	}

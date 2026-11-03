@@ -14,10 +14,12 @@ import { BASELINE_DESCENT_RATIO, groupIntoLines, highlightBarHeight, quoteBetwee
 import { RENDER_SCALE, baseRenderScale, layoutRenderScale, zoomedRenderScale } from './pdf/renderScale';
 import { maxWriteIntervalMs } from './pdf/saveCadence';
 import { placeWithin } from './pdf/popoverPlacement';
+import { confirmDeletePage } from './deletePageModal';
 import { FileMemoryStore } from './fileMemory';
-import { defaultLayout, insertPage, movePage, type PageLayout } from './layout/pageLayout';
+import { defaultLayout, insertPage, movePage, removePageFromLayout, type PageLayout } from './layout/pageLayout';
 import { dropTargetAt, edgeScrollSpeed, type DropTarget } from './pdf/dropTarget';
 import { appendRows } from './pdf/pageGrid';
+import { removePageFully } from './pdf/removePage';
 import { allowCorePdfOnce } from './viewRedirect';
 import { defaultSettings, type InklingSettings } from './settings';
 import { applyTemplate, insertPageLike, pageSizeFor } from './templates';
@@ -305,6 +307,7 @@ export class PdfAnnotateView extends FileView {
 	private currentPageFrame: number | null = null;
 	private disposeToolbar: (() => void) | null = null;
 	private addingPage = false;
+	private deletingPage = false;
 	// The pending re-fit after the pane changed size — see onResize.
 	private resizeTimer: number | null = null;
 	// Full screen, and the document it was entered in (a popout window has
@@ -467,6 +470,7 @@ export class PdfAnnotateView extends FileView {
 			// up in a note is the pen you get in a PDF (see annotate/toolState).
 			toolState,
 			onAddPage: (templateId) => void this.addPage(templateId),
+			onDeletePage: () => void this.deletePage(),
 			getPageTemplates: () => ({
 				templates: this.getSettings().pageTemplates,
 				defaultId: this.getSettings().defaultPageTemplate,
@@ -1805,9 +1809,66 @@ export class PdfAnnotateView extends FileView {
 		}
 	}
 
+	// Deletes the page being read, once the reader has said yes, taking out of
+	// the file everything only that page used. The page is outlined while the
+	// question is up, so there is no doubt which one it means. The layout,
+	// the zoom and the place in the document are kept, and the reader lands on
+	// the page that took its place.
+	private async deletePage(): Promise<void> {
+		const file = this.currentFile;
+		if (!file || this.deletingPage || this.addingPage || this.switchingLayout) return;
+
+		const page = this.currentPageNumber;
+		const pageCount = this.layout?.cells.length ?? 0;
+		if (pageCount <= 1) {
+			new Notice('Inkling: a PDF needs at least one page.');
+			return;
+		}
+
+		this.deletingPage = true;
+		const outlined = this.contentEl.querySelector<HTMLElement>(
+			`.inkling-pdf-page-placeholder[data-page-number="${page}"]`,
+		);
+		outlined?.addClass('is-deleting');
+		try {
+			if (!(await confirmDeletePage(this.app, { page, pageCount }))) return;
+
+			// Same as adding a page: ink not saved yet has to be, or it would
+			// be lost when the view reloads from the file.
+			await this.flushAnnotationsIfDirty(file);
+			const pdfDoc = await PDFDocument.load(await this.app.vault.readBinary(file));
+			const pagesBefore = pdfDoc.getPageCount();
+			// The file changed under the view (another device, another app):
+			// the page the reader chose may not be the page at that number now.
+			if (pagesBefore !== pageCount) {
+				new Notice('Inkling: this PDF changed since it was opened. Nothing was deleted.');
+				return;
+			}
+
+			removePageFully(pdfDoc, page - 1);
+			await writeBinarySafely(this.app.vault, file, toArrayBuffer(await pdfDoc.save()));
+
+			// A saved layout is for the number of pages the file had; every
+			// page after the deleted one has a new number now.
+			const memory = this.getFileMemory();
+			const saved = memory.getLayout(file.path, pagesBefore);
+			if (saved) memory.setLayout(file.path, removePageFromLayout(saved, page), pagesBefore - 1);
+
+			await this.reloadKeepingZoom(file);
+			this.scrollToPage(Math.min(page, pagesBefore - 1));
+		} catch (error) {
+			console.error('Inkling: failed to delete the page.', error);
+			new Notice('Inkling: could not delete the page.');
+		} finally {
+			outlined?.removeClass('is-deleting');
+			this.deletingPage = false;
+			this.controller.refreshUi();
+		}
+	}
+
 	private async addPage(templateId?: string): Promise<void> {
 		const file = this.currentFile;
-		if (!file || this.addingPage) return;
+		if (!file || this.addingPage || this.deletingPage) return;
 		this.addingPage = true;
 
 		try {
