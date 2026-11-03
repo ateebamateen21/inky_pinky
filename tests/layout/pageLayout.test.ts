@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { defaultLayout, insertPage, isValidLayout, layoutRows, movePage, type PageLayout, type Side } from '../../src/layout/pageLayout';
+import {
+	defaultLayout,
+	insertPage,
+	isValidLayout,
+	layoutRows,
+	movePage,
+	removePageFromLayout,
+	type PageLayout,
+	type Side,
+} from '../../src/layout/pageLayout';
 
 // A layout shaped like the sketch: slides down column 0, with notes beside
 // them and one page to the left.
@@ -337,5 +346,56 @@ describe('insertPage', () => {
 				}
 			}
 		}
+	});
+});
+
+describe('removePageFromLayout', () => {
+	it('takes the page out and gives every later page its new number, in the same cell', () => {
+		// Page 3 is deleted: the old pages 4, 5 and 6 are now 3, 4 and 5.
+		const removed = removePageFromLayout(sketch, 3);
+		expect(removed.cells).toHaveLength(5);
+		expect(removed.cells.slice(0, 2)).toEqual(sketch.cells.slice(0, 2));
+		expect(removed.cells.slice(2)).toEqual(sketch.cells.slice(3));
+		expect(layoutRows(removed)).toEqual([[1, 2], [3, 4, 5]]);
+	});
+
+	it('closes up the gap in the row it leaves, on either side of column 0', () => {
+		const row: PageLayout = { cells: [{ row: 0, col: 0 }, { row: 0, col: 1 }, { row: 0, col: 2 }] };
+		expect(removePageFromLayout(row, 2).cells).toEqual([{ row: 0, col: 0 }, { row: 0, col: 1 }]);
+
+		const left: PageLayout = { cells: [{ row: 0, col: -2 }, { row: 0, col: -1 }, { row: 0, col: 0 }] };
+		expect(removePageFromLayout(left, 2).cells).toEqual([{ row: 0, col: -1 }, { row: 0, col: 0 }]);
+	});
+
+	it('does not drag the notes into column 0 when the page there is deleted', () => {
+		const removed = removePageFromLayout(sketch, 1);
+		// Page 2 (the old one) was in column 1 beside page 1, and stays there.
+		expect(removed.cells[0]).toEqual({ row: 0, col: 1 });
+	});
+
+	it('leaves a plain column looking plain, though the row numbers now skip one', () => {
+		expect(removePageFromLayout(defaultLayout(4), 2)).toEqual({
+			cells: [
+				{ row: 0, col: 0 },
+				{ row: 2, col: 0 },
+				{ row: 3, col: 0 },
+			],
+		});
+	});
+
+	it('always gives a valid layout, for every page of the sketch', () => {
+		for (let page = 1; page <= sketch.cells.length; page++) {
+			expect(isValidLayout(removePageFromLayout(sketch, page), sketch.cells.length - 1)).toBe(true);
+		}
+	});
+
+	it('changes nothing for a page that does not exist, and leaves the layout it was given alone', () => {
+		expect(removePageFromLayout(sketch, 0)).toBe(sketch);
+		expect(removePageFromLayout(sketch, 7)).toBe(sketch);
+		expect(removePageFromLayout(sketch, 1.5)).toBe(sketch);
+
+		const before = JSON.parse(JSON.stringify(sketch)) as PageLayout;
+		removePageFromLayout(sketch, 2);
+		expect(sketch).toEqual(before);
 	});
 });

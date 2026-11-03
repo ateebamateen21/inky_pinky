@@ -368,4 +368,3 @@ describe('carrying a page to the edge of the view', () => {
 		expect(cancelled).toHaveLength(1);
 	});
 });
-

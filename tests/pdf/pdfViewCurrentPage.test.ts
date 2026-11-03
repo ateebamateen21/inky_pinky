@@ -123,4 +123,3 @@ describe('the current page in a grid', () => {
 		expect(view.currentPage()).toBe(2);
 	});
 });
-

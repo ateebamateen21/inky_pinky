@@ -159,4 +159,3 @@ describe('the width of the grid columns', () => {
 		expect(() => view.updateGridColumnWidth()).not.toThrow();
 	});
 });
-

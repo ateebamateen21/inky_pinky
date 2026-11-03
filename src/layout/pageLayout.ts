@@ -198,3 +198,19 @@ export function insertPage(layout: PageLayout, newPage: number, side: Side, besi
 	}
 	return { cells: cells as Cell[] };
 }
+
+// ---- Deleting a page --------------------------------------------------
+//
+// Taking a page out of the PDF renumbers every page after it, and the layout
+// has to follow: the page's cell goes, and each later page keeps its cell
+// under its new number. The row it leaves closes up the same way as when a
+// page is lifted out to be moved, and for the same reasons.
+
+export function removePageFromLayout(layout: PageLayout, page: number): PageLayout {
+	if (!isPage(layout, page)) return layout;
+
+	const cells: (Cell | null)[] = layout.cells.map((cell) => ({ ...cell }));
+	const [vacated] = cells.splice(page - 1, 1);
+	closeUp(cells, vacated!);
+	return { cells: cells as Cell[] };
+}
