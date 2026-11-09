@@ -470,7 +470,8 @@ export class PdfAnnotateView extends FileView {
 			// up in a note is the pen you get in a PDF (see annotate/toolState).
 			toolState,
 			onAddPage: (templateId) => void this.addPage(templateId),
-			onDeletePage: () => void this.deletePage(),
+			onDeletePage: () => void this.deletePage(false),
+			onDeletePageKeepingContent: () => void this.deletePage(true),
 			getPageTemplates: () => ({
 				templates: this.getSettings().pageTemplates,
 				defaultId: this.getSettings().defaultPageTemplate,
@@ -1814,7 +1815,11 @@ export class PdfAnnotateView extends FileView {
 	// question is up, so there is no doubt which one it means. The layout,
 	// the zoom and the place in the document are kept, and the reader lands on
 	// the page that took its place.
-	private async deletePage(): Promise<void> {
+	//
+	// With `keepContent` the page is only taken out of the page list: what was
+	// on it stays in the file, hidden. That is how a viewer never sees it
+	// again and a PDF tool still can.
+	private async deletePage(keepContent: boolean): Promise<void> {
 		const file = this.currentFile;
 		if (!file || this.deletingPage || this.addingPage || this.switchingLayout) return;
 
@@ -1831,7 +1836,7 @@ export class PdfAnnotateView extends FileView {
 		);
 		outlined?.addClass('is-deleting');
 		try {
-			if (!(await confirmDeletePage(this.app, { page, pageCount }))) return;
+			if (!(await confirmDeletePage(this.app, { page, pageCount, keepContent }))) return;
 
 			// Same as adding a page: ink not saved yet has to be, or it would
 			// be lost when the view reloads from the file.
@@ -1845,7 +1850,8 @@ export class PdfAnnotateView extends FileView {
 				return;
 			}
 
-			removePageFully(pdfDoc, page - 1);
+			if (keepContent) pdfDoc.removePage(page - 1);
+			else removePageFully(pdfDoc, page - 1);
 			await writeBinarySafely(this.app.vault, file, toArrayBuffer(await pdfDoc.save()));
 
 			// A saved layout is for the number of pages the file had; every

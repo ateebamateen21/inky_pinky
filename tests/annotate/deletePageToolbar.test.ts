@@ -30,12 +30,16 @@ beforeAll(() => {
 
 function mount(canManagePages = true) {
 	let deleted = 0;
-	const controller = new AnnotationController({ onDeletePage: () => deleted++ });
+	let keeping = 0;
+	const controller = new AnnotationController({ onDeletePage: () => deleted++, onDeletePageKeepingContent: () => keeping++ });
 	controller.setCanManagePages(canManagePages);
 	const host = document.createElement('div');
 	buildToolbar(host, controller);
 	const button = host.querySelector<HTMLButtonElement>('button[aria-label="Delete page, and everything on it"]')!;
-	return { controller, button, deleted: () => deleted };
+	const keepingButton = host.querySelector<HTMLButtonElement>(
+		'button[aria-label="Delete page, but keep its content hidden in the file"]',
+	)!;
+	return { controller, button, keepingButton, deleted: () => deleted, keeping: () => keeping };
 }
 
 describe('the Delete page button', () => {
@@ -54,5 +58,30 @@ describe('the Delete page button', () => {
 		const { controller, button } = mount();
 		controller.setReadOnly(true);
 		expect(button.disabled).toBe(true);
+	});
+});
+
+describe('the Delete page, keep its content button', () => {
+	it('asks the view to delete the page keeping its content, and not the other kind', () => {
+		const { keepingButton, deleted, keeping } = mount();
+		keepingButton.click();
+		expect(keeping()).toBe(1);
+		expect(deleted()).toBe(0);
+	});
+
+	it('is offered wherever pages can be added, and nowhere else', () => {
+		expect(mount(true).keepingButton.hidden).toBe(false);
+		expect(mount(false).keepingButton.hidden).toBe(true);
+	});
+
+	it('cannot be used on a PDF that is read-only', () => {
+		const { controller, keepingButton } = mount();
+		controller.setReadOnly(true);
+		expect(keepingButton.disabled).toBe(true);
+	});
+
+	it('is a different button from the one that removes everything', () => {
+		const { button, keepingButton } = mount();
+		expect(keepingButton).not.toBe(button);
 	});
 });

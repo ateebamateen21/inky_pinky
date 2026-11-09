@@ -18,9 +18,9 @@ beforeAll(() => {
 });
 
 // Asks, and gets hold of the modal that was opened with its contents built.
-function ask(page = 17, pageCount = 93) {
+function ask(page = 17, pageCount = 93, keepContent = false) {
 	resetObsidianStubs();
-	const answer = confirmDeletePage({} as never, { page, pageCount });
+	const answer = confirmDeletePage({} as never, { page, pageCount, keepContent });
 	const modal = openedModals[openedModals.length - 1] as unknown as {
 		contentEl: HTMLElement;
 		titleEl: HTMLElement;
@@ -46,6 +46,16 @@ describe('the delete page question', () => {
 		expect(text).toContain('everything drawn on it');
 		expect(text).toContain('Nothing of it is kept in the file');
 		expect(text).toContain('cannot be undone');
+	});
+
+	it('says plainly, when the content is kept, that it stays in the file and can be found', () => {
+		const { modal } = ask(17, 93, true);
+		const text = modal.contentEl.textContent ?? '';
+		expect(modal.titleEl.textContent).toBe('Delete page 17?');
+		expect(text).toContain('Page 17 of 93');
+		expect(text).toContain('stays hidden inside the file');
+		expect(text).toContain('anyone you share the file with');
+		expect(text).not.toContain('Nothing of it is kept');
 	});
 
 	it('has Delete as a warning button and Cancel beside it', () => {

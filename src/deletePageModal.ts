@@ -9,6 +9,10 @@ export interface DeletePageQuestion {
 	// The page, and how many pages the PDF has.
 	page: number;
 	pageCount: number;
+	// Whether the page's content is to stay in the file, unlinked. Said
+	// plainly in the question, since what stays can be read back out of the
+	// file by other PDF tools, and by anyone the file is shared with.
+	keepContent?: boolean;
 }
 
 // Resolves true when the reader confirms, and false for anything else:
@@ -29,14 +33,16 @@ class DeletePageModal extends Modal {
 	}
 
 	onOpen(): void {
-		const { page, pageCount } = this.question;
+		const { page, pageCount, keepContent } = this.question;
 		this.setTitle(`Delete page ${page}?`);
 		// Obsidian styles its own confirmations off this class.
 		this.modalEl.addClass('mod-confirmation');
 		this.contentEl.createEl('p', {
-			text:
-				`Page ${page} of ${pageCount} will be removed from the PDF, with everything drawn on it. ` +
-				'Nothing of it is kept in the file. This cannot be undone.',
+			text: keepContent
+				? `Page ${page} of ${pageCount} will be removed from the PDF, but its content stays hidden inside the file. ` +
+					'Other PDF tools can still find it, and so can anyone you share the file with. This cannot be undone here.'
+				: `Page ${page} of ${pageCount} will be removed from the PDF, with everything drawn on it. ` +
+					'Nothing of it is kept in the file. This cannot be undone.',
 		});
 
 		const buttons = this.contentEl.createDiv({ cls: 'modal-button-container' });

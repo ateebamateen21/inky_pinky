@@ -90,7 +90,7 @@ async function open(options: { sizes?: [number, number][]; currentPage?: number;
 		onLoadFile: ReturnType<typeof vi.fn>;
 		scrollToPage: ReturnType<typeof vi.fn>;
 		controller: { applyViewZoom(zoom: number): void; getViewZoom(): number };
-		deletePage(): Promise<void>;
+		deletePage(keepContent: boolean): Promise<void>;
 	};
 	internals.currentFile = new TFile('Notes/Lecture.pdf');
 	internals.currentPageNumber = options.currentPage ?? 2;
@@ -103,7 +103,8 @@ async function open(options: { sizes?: [number, number][]; currentPage?: number;
 		view,
 		vault,
 		internals,
-		remove: () => internals.deletePage(),
+		remove: () => internals.deletePage(false),
+		removeKeeping: () => internals.deletePage(true),
 		saved: async () => PDFDocument.load(written!),
 		wrote: () => written !== null,
 	};
@@ -116,7 +117,7 @@ describe('deleting the page being read', () => {
 
 		await remove();
 
-		expect(ask).toHaveBeenCalledWith(expect.anything(), { page: 2, pageCount: 3 });
+		expect(ask).toHaveBeenCalledWith(expect.anything(), { page: 2, pageCount: 3, keepContent: false });
 	});
 
 	it('removes the page and what only it used from the file, once confirmed', async () => {
@@ -137,6 +138,17 @@ describe('deleting the page being read', () => {
 		const plain = await PDFDocument.load(await pdfWithPages(THREE));
 		plain.removePage(1);
 		expect(hasMarker(await PDFDocument.load(await plain.save()))).toBe(true);
+	});
+
+	it('says in the question whether the content is being kept', async () => {
+		ask.mockResolvedValue(false);
+		const everything = await open();
+		await everything.remove();
+		expect(ask).toHaveBeenLastCalledWith(expect.anything(), { page: 2, pageCount: 3, keepContent: false });
+
+		const keeping = await open();
+		await keeping.removeKeeping();
+		expect(ask).toHaveBeenLastCalledWith(expect.anything(), { page: 2, pageCount: 3, keepContent: true });
 	});
 
 	it('goes to the page that took its place, or back one when the last page went', async () => {
@@ -270,5 +282,48 @@ describe('deleting the page being read', () => {
 		await first;
 
 		expect(ask).toHaveBeenCalledTimes(1);
+	});
+});
+
+// The other way: the page is taken out of the order, and what was on it stays
+// in the file, hidden, where other PDF tools can find it.
+describe('deleting the page but keeping its content', () => {
+	it('takes the page out of the order and leaves what was on it in the file', async () => {
+		ask.mockResolvedValue(true);
+		const { removeKeeping, saved } = await open();
+
+		await removeKeeping();
+
+		const doc = await saved();
+		expect(doc.getPageCount()).toBe(2);
+		expect(doc.getPage(0).getSize()).toEqual({ width: 612, height: 792 });
+		expect(doc.getPage(1).getSize()).toEqual({ width: 500, height: 400 });
+		expect(hasMarker(doc)).toBe(true);
+	});
+
+	it('does everything else the same: the layout, the zoom, where you land, and no change when the answer is no', async () => {
+		ask.mockResolvedValue(true);
+		const memory = new FileMemoryStore();
+		memory.setLayout(
+			'Notes/Lecture.pdf',
+			{ cells: [{ row: 0, col: 0 }, { row: 0, col: 1 }, { row: 0, col: 2 }, { row: 1, col: 0 }] },
+			4,
+		);
+		const kept = await open({ sizes: [...THREE, [500, 400]], currentPage: 2, memory });
+		kept.internals.controller.applyViewZoom(0.5);
+		kept.internals.onLoadFile = vi.fn(async () => {
+			kept.internals.controller.applyViewZoom(1);
+		});
+
+		await kept.removeKeeping();
+
+		expect(memory.getLayout('Notes/Lecture.pdf', 3)).toEqual({ cells: [{ row: 0, col: 0 }, { row: 0, col: 1 }, { row: 1, col: 0 }] });
+		expect(kept.internals.controller.getViewZoom()).toBe(0.5);
+		expect(kept.internals.scrollToPage).toHaveBeenCalledWith(2);
+
+		ask.mockResolvedValue(false);
+		const declined = await open();
+		await declined.removeKeeping();
+		expect(declined.wrote()).toBe(false);
 	});
 });
