@@ -30,6 +30,7 @@ const TOOL_BUTTONS: ReadonlyArray<ButtonSpec & { tool: ToolType }> = [
 	{ tool: 'select', icon: 'lasso', fallback: '⇖', title: 'Select / lasso' },
 	{ tool: 'pen', icon: 'pencil', fallback: '✏️', title: 'Pen' },
 	{ tool: 'highlighter', icon: 'highlighter', fallback: '🖊️', title: 'Highlighter' },
+	{ tool: 'tape', icon: 'sticker', fallback: '🩹', title: 'Washi tape — draw to cover, tap to lift' },
 	{ tool: 'eraser', icon: 'eraser', fallback: '⌫', title: 'Eraser' },
 	{ tool: 'note', icon: 'message-square', fallback: '🗨', title: 'Note' },
 	{ tool: 'line', icon: 'minus', fallback: '╱', title: 'Line' },
@@ -394,6 +395,9 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		// place notes nobody could ever type into.
 		const noteButton = toolButtons.get('note');
 		if (noteButton && !controller.canTakeNotes()) noteButton.hidden = true;
+		// Only a surface that can save one has the tape; see canUseTape.
+		const tapeButton = toolButtons.get('tape');
+		if (tapeButton && !controller.canUseTape()) tapeButton.hidden = true;
 		for (const group of [colorGroup, widthGroup, statusGroup]) group.hidden = collapsed;
 		for (const button of [redoButton, deleteButton, clearPageButton, addPageButton, addPageMenuButton, deletePageButton, deletePageKeepingButton, invertButton, navButton, gridButton]) button.hidden = collapsed;
 		setIconOrText(collapseButton, collapsed ? 'chevrons-down' : 'chevrons-up', collapsed ? '⌄' : '⌃');

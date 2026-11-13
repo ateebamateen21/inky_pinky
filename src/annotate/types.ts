@@ -11,7 +11,7 @@ export interface Point {
 	p?: number;
 }
 
-export type DrawToolType = 'pen' | 'highlighter';
+export type DrawToolType = 'pen' | 'highlighter' | 'tape';
 export type ShapeToolType = 'line' | 'rectangle' | 'oval' | 'arrow';
 export type ToolType = 'select' | DrawToolType | 'eraser' | 'note' | ShapeToolType;
 
@@ -150,10 +150,42 @@ const RETIRED_COLORS: readonly PresetColor[] = [{ value: '#ffd43b', label: 'Gold
 // the same way an ink colour can.
 export const ALL_PRESET_COLORS: readonly PresetColor[] = [...PEN_COLORS, ...HIGHLIGHTER_COLORS, ...RETIRED_COLORS];
 
-// Which swatches the toolbar shows for a given tool. Only the highlighter
-// differs; a shape or a note is drawn in ink like the pen is.
+// How a tape is patterned. Drawn by src/annotate/tapeStyle.ts; named here
+// so a design can sit in the palette without that file being imported by
+// every module that only wants to list colours.
+export type TapePattern = 'solid' | 'dots' | 'stripes' | 'checks' | 'zigzag';
+
+// A washi tape design: a swatch (so the toolbar can list it like any other
+// colour) that also says how the tape is patterned.
+//
+// The colour is the design's identity. A tape is stored with its colour like
+// every other annotation, and its pattern is looked up from that colour when
+// it is drawn (see tapeDesignFor in src/annotate/tape.ts) — so a tape needs
+// no field of its own for the pattern, and a colour that is not on this list
+// (a file written by something else) still draws, as plain tape.
+export interface TapeDesign extends PresetColor {
+	pattern: TapePattern;
+}
+
+// Original designs, drawn in code rather than loaded from images: nothing to
+// license, nothing to ship, and they stay sharp at any zoom. Pale on purpose
+// — tape is meant to cover text, and a pale tape still reads as paper rather
+// than as a black-out bar.
+export const TAPE_DESIGNS: readonly TapeDesign[] = [
+	{ value: '#f4a6b7', label: 'Pink dots', pattern: 'dots' },
+	{ value: '#7bd3b0', label: 'Mint stripes', pattern: 'stripes' },
+	{ value: '#8ec5ee', label: 'Sky checks', pattern: 'checks' },
+	{ value: '#f6d56a', label: 'Butter zigzag', pattern: 'zigzag' },
+	{ value: '#c9b5f0', label: 'Lilac dots', pattern: 'dots' },
+	{ value: '#f7b98b', label: 'Peach', pattern: 'solid' },
+];
+
+// Which swatches the toolbar shows for a given tool. The highlighter and the
+// tape differ; a shape or a note is drawn in ink like the pen is.
 export function paletteFor(tool: ToolType): readonly PresetColor[] {
-	return tool === 'highlighter' ? HIGHLIGHTER_COLORS : PEN_COLORS;
+	if (tool === 'highlighter') return HIGHLIGHTER_COLORS;
+	if (tool === 'tape') return TAPE_DESIGNS;
+	return PEN_COLORS;
 }
 
 export const DEFAULT_WIDTH = 3;
@@ -165,6 +197,11 @@ export const DEFAULT_WIDTH = 3;
 // highlightBarHeight in src/pdf/textLines.ts. This is what it draws with in
 // a margin, over a diagram, or in an ink block with no text under it.)
 export const DEFAULT_HIGHLIGHTER_WIDTH = 16;
+
+// A tape's default, in the same units: a little broader than a highlighter,
+// because it has to cover a line of text with room to spare rather than sit
+// on it.
+export const DEFAULT_TAPE_WIDTH = 24;
 
 // How strongly a highlighter tints the page beneath it.
 //
@@ -193,6 +230,9 @@ export const MAX_WIDTH = 40;
 export function defaultStyleFor(tool: ToolType): { color: string; width: number } {
 	if (tool === 'highlighter') {
 		return { color: HIGHLIGHTER_COLORS[0]?.value ?? DEFAULT_COLOR, width: DEFAULT_HIGHLIGHTER_WIDTH };
+	}
+	if (tool === 'tape') {
+		return { color: TAPE_DESIGNS[0]?.value ?? DEFAULT_COLOR, width: DEFAULT_TAPE_WIDTH };
 	}
 	return { color: DEFAULT_COLOR, width: DEFAULT_WIDTH };
 }

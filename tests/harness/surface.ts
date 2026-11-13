@@ -48,6 +48,7 @@ const CONTEXT_METHODS = [
 	'fillRect',
 	'strokeRect',
 	'setLineDash',
+	'createPattern',
 	'setTransform',
 	'translate',
 	'scale',

@@ -337,3 +337,73 @@ describe('highlighter appearance in the file', () => {
 		expect(readInklingAnnotations(await reload(doc), 0)[0]).toMatchObject({ tool: 'highlighter' });
 	});
 });
+
+describe('washi tape in the file', () => {
+	const tape: Annotation = {
+		id: 'ink-t',
+		kind: 'stroke',
+		tool: 'tape',
+		color: '#7bd3b0',
+		width: 24,
+		points: [{ x: 50, y: 400 }, { x: 150, y: 402 }, { x: 250, y: 400 }],
+	};
+
+	function tapeDict(doc: PDFDocument): PDFDict {
+		const annots = doc.getPage(0).node.Annots();
+		const ref = annots?.get(0);
+		const dict = ref instanceof PDFRef ? doc.context.lookup(ref, PDFDict) : undefined;
+		if (!dict) throw new Error('no annotation on the page');
+		return dict;
+	}
+
+	it('recovers a tape as a tape, with its colour, width and path', async () => {
+		const doc = await blankDoc();
+		writeInklingAnnotations(doc, 0, [tape]);
+
+		const read = readInklingAnnotations(await reload(doc), 0);
+		expect(read).toHaveLength(1);
+		expect(read[0]).toMatchObject({ id: 'ink-t', kind: 'stroke', tool: 'tape', color: '#7bd3b0', width: 24 });
+		expect(read[0]).toMatchObject({ points: tape.kind === 'stroke' ? tape.points : [] });
+	});
+
+	it('writes it hidden, so that no other reader paints it', async () => {
+		const doc = await blankDoc();
+		writeInklingAnnotations(doc, 0, [tape]);
+
+		const flags = tapeDict(await reload(doc)).lookup(PDFName.of('F'), PDFNumber).asNumber();
+		// Bit 2 is Hidden. Bit 3, Print, is the one a pen stroke sets, and a
+		// hidden annotation is not printed whatever it says.
+		expect(flags & 2).toBe(2);
+		expect(flags & 4).toBe(0);
+	});
+
+	it('is not mistaken for a highlighter, whatever its opacity', async () => {
+		const doc = await blankDoc();
+		writeInklingAnnotations(doc, 0, [tape]);
+		const dict = tapeDict(await reload(doc));
+		expect(dict.lookup(PDFName.of('CA'), PDFNumber).asNumber()).toBe(1);
+		expect(readInklingAnnotations(await reload(doc), 0)[0]).toMatchObject({ tool: 'tape' });
+	});
+
+	it('keeps a tape and a pen stroke apart on the same page, in order', async () => {
+		const doc = await blankDoc();
+		const pen: Annotation = { id: 'ink-p', kind: 'stroke', tool: 'pen', color: '#1e1e1e', width: 3, points: [{ x: 0, y: 0 }, { x: 9, y: 9 }] };
+		writeInklingAnnotations(doc, 0, [tape, pen]);
+
+		const read = readInklingAnnotations(await reload(doc), 0);
+		expect(read.map((a) => [a.id, a.kind === 'stroke' ? a.tool : a.kind])).toEqual([
+			['ink-t', 'tape'],
+			['ink-p', 'pen'],
+		]);
+	});
+
+	it('does not rewrite a page whose tape has not changed', async () => {
+		const doc = await blankDoc();
+		writeInklingAnnotations(doc, 0, [tape]);
+		const reopened = await reload(doc);
+
+		const changes = recordChanges(reopened.context, (touch) => writeInklingAnnotations(reopened, 0, [tape], touch));
+		expect(changes.written.size).toBe(0);
+		expect(changes.freed.size).toBe(0);
+	});
+});

@@ -25,6 +25,7 @@ import {
 } from './pointer';
 import { MIN_VIEW_ZOOM, stepLadder } from './zoomLadder';
 import { recognizeShape } from './recognize';
+import { isTap } from './tape';
 import { handleRects, isHighlight, renderBase, renderHighlights, renderOverlay } from './render';
 import { AnnotationStore } from './store';
 import { HistoryStack } from './history';
@@ -221,6 +222,12 @@ export interface AnnotationControllerOptions {
 	// whoever mounted it. A host that does not supply this has no note
 	// tool at all, which is how ink blocks stay out of it.
 	onEditNote?: (pageNumber: number, point: Point, existing: string) => Promise<string | null>;
+	// Whether this surface can keep a washi tape. A tape is saved as its own
+	// kind of annotation (see pdf/annotationSync.ts); a Markdown ink block
+	// saves in a format with no such thing, so only the PDF view says yes.
+	// A surface that does not has no tape button, and draws with the pen
+	// while the shared tool is the tape — see getTool.
+	supportsTape?: boolean;
 	// Whether a stroke keeps the pressure its samples carried. Read at
 	// commit time rather than at capture: turning it off should change
 	// how the next stroke is drawn, not require reopening the file.
@@ -289,6 +296,14 @@ export class AnnotationController {
 	// page by page, as it is scrolled — a view-level check would not cover
 	// the pages mounted later.
 	private readOnly = false;
+	// The tapes that have been tapped and are showing what is under them, by
+	// annotation id. Deliberately not in the store: lifting a tape changes
+	// nothing in the document, so it takes no undo step, schedules no save and
+	// is gone the next time the file is opened — tapes are for testing
+	// yourself, and a tape that stayed lifted would have given the answer
+	// away. Held here rather than per page so that scrolling a page out of
+	// view and back does not cover it again.
+	private readonly revealedTapes = new Set<string>();
 	private eraserCursor: { pageNumber: number; point: Point } | null = null;
 	// Each page remembers its own pinch-zoom level independently (see
 	// pointer.ts) — the toolbar's zoom readout shows whichever page the view
@@ -481,6 +496,7 @@ export class AnnotationController {
 		// page that used to have its number, and saved it there on the next
 		// stroke.
 		this.store.forgetAll();
+		this.revealedTapes.clear();
 	}
 
 	// End of life for the controller itself, as distinct from unmounting its
@@ -504,7 +520,26 @@ export class AnnotationController {
 	// the surface the user is actually pointing at.
 
 	getTool(): ToolType {
-		return this.toolState.getTool();
+		return this.usesPenInstead() ? 'pen' : this.toolState.getTool();
+	}
+
+	// The shared tool is the tape, but this surface cannot keep one. The tool
+	// is shared across every surface (see ToolState), so choosing the tape in
+	// a PDF leaves it chosen when a note's ink block is next to be drawn on;
+	// that block draws with the pen rather than with something it cannot save.
+	private usesPenInstead(): boolean {
+		return this.toolState.getTool() === 'tape' && !this.canUseTape();
+	}
+
+	// The user acting on a toolbar that is showing the pen picks the pen, for
+	// real. Without this, the swatch they tapped would recolour the tape the
+	// strip is not showing.
+	private adoptPen(): void {
+		if (this.usesPenInstead()) this.toolState.setTool('pen');
+	}
+
+	canUseTape(): boolean {
+		return this.options.supportsTape === true;
 	}
 
 	setTool(tool: ToolType): void {
@@ -518,16 +553,17 @@ export class AnnotationController {
 	}
 
 	getColor(): string {
-		return this.toolState.getColor();
+		return this.usesPenInstead() ? this.toolState.styleOf('pen').color : this.toolState.getColor();
 	}
 
 	setColor(color: string): void {
+		this.adoptPen();
 		this.toolState.setColor(color);
 		if (this.selection.ids.size > 0) this.restyleSelection({ color });
 	}
 
 	getWidth(): number {
-		return this.toolState.getWidth();
+		return this.usesPenInstead() ? this.toolState.styleOf('pen').width : this.toolState.getWidth();
 	}
 
 	// The toolbar width in a page's own canvas pixels — see getInkScale.
@@ -538,6 +574,7 @@ export class AnnotationController {
 	}
 
 	setWidth(width: number): void {
+		this.adoptPen();
 		this.toolState.setWidth(width);
 		// Clamped by the shared state, so read it back rather than restyling
 		// a selection with a value it refused.
@@ -1008,6 +1045,7 @@ export class AnnotationController {
 		switch (tool) {
 			case 'pen':
 			case 'highlighter':
+			case 'tape':
 				this.drag = {
 					pageNumber,
 					mode: { kind: 'draw', tool, points: [this.clampToPage(pageNumber, point)], lastMovedAt: performance.now(), startStamp: stamp },
@@ -1299,6 +1337,11 @@ export class AnnotationController {
 	// declines to snap (not a highlighter, no text under the stroke, or no
 	// host support) commits as drawn, same as every other tool.
 	private commitDrawStroke(pageNumber: number, mode: { tool: DrawToolType; points: Point[]; lastMovedAt: number }): void {
+		if (mode.tool === 'tape') {
+			this.commitTape(pageNumber, mode.points);
+			return;
+		}
+
 		// Held still at the end of a pen stroke: offer it to recognition.
 		// Checked before the highlighter branch below only because a
 		// highlighter is never snapped — a straight yellow bar is already
@@ -1329,6 +1372,43 @@ export class AnnotationController {
 			}
 		}
 		this.commitNew(pageNumber, this.strokeFromDraft(pageNumber, mode));
+	}
+
+	// A finished gesture with the tape tool: a new tape, or — if the pen only
+	// tapped — a tap on one that is already there. The two share a tool
+	// because tapping is how a tape is lifted and the tool is the one already
+	// in the hand; telling them apart by how far the pen travelled is what
+	// keeps a tap from leaving a tiny tape behind.
+	private commitTape(pageNumber: number, points: Point[]): void {
+		const first = points[0];
+		if (isTap(points)) {
+			if (first) this.toggleTapeAt(pageNumber, first);
+			return;
+		}
+		this.commitNew(pageNumber, {
+			id: createId(),
+			kind: 'stroke',
+			tool: 'tape',
+			color: this.getColor(),
+			width: this.inkWidth(pageNumber),
+			// No pressure: a tape is an even band, and a pressure array on it
+			// would be bytes in the file that nothing reads.
+			points: points.map(({ x, y }) => ({ x, y })),
+		});
+	}
+
+	// Lifts the topmost tape under the point, or covers it again if it was
+	// already lifted. Not an edit: nothing is committed, so there is no undo
+	// step and nothing to save (see revealedTapes).
+	private toggleTapeAt(pageNumber: number, point: Point): void {
+		const hit = [...this.store.getPage(pageNumber)]
+			.reverse()
+			.find((a) => a.kind === 'stroke' && a.tool === 'tape' && hitTestAnnotation(a, point));
+		if (!hit) return;
+
+		if (this.revealedTapes.has(hit.id)) this.revealedTapes.delete(hit.id);
+		else this.revealedTapes.add(hit.id);
+		this.redrawBase(pageNumber);
 	}
 
 	// Opens the host’s note editor and applies whatever comes back.
@@ -1475,7 +1555,7 @@ export class AnnotationController {
 		const mount = this.pages.get(pageNumber);
 		if (!mount) return;
 		const annotations = this.store.getPage(pageNumber);
-		renderBase(mount.base, annotations);
+		renderBase(mount.base, annotations, this.revealedTapes);
 
 		// The layer is created on the first highlight and kept from then on —
 		// erasing the last one has to repaint it empty, not leave the last

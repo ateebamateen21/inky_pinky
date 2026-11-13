@@ -38,3 +38,14 @@ export const PRESSURE_KEY = 'P';
 // was, and guessing wrong turns a highlight of the book into a comment the
 // user never wrote.
 export const QUOTE_KEY = 'Q';
+
+// Marks an Ink annotation as a washi tape rather than a pen stroke, and
+// names its pattern.
+//
+// A tape is drawn by Inkling's own overlay, so the file only has to carry it
+// and let every other reader pass it by. Everything that makes a tape a tape
+// therefore rides in the private /Inkling dict, with the annotation itself
+// written hidden (see writeTape in pdf/annotationSync.ts) so no other reader
+// paints it. A pen stroke is told from a highlight by its opacity; there is no
+// such tell for a tape, which is written fully opaque like a pen stroke.
+export const TAPE_KEY = 'Tape';

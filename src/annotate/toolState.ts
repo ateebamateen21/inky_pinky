@@ -148,6 +148,13 @@ export class ToolState {
 		this.notify('chrome');
 	}
 
+	// What a tool would draw with now, for a surface that stands one tool in
+	// for another and so must not read the shared colour and width, which
+	// belong to the tool that is actually selected.
+	styleOf(tool: ToolType): ToolStyle {
+		return this.styleFor(tool);
+	}
+
 	// The tool's own default until the user overrides it, not one shared
 	// pair: a highlighter that starts on the pen's fine black nib draws a
 	// hairline smear the first time it is picked up, which is not a

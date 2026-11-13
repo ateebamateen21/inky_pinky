@@ -4,7 +4,7 @@ import { getDocument, type PDFDocumentProxy, type PDFPageProxy } from 'pdfjs-dis
 // toolbar, which imports the Obsidian API, and pulling that in here made
 // this module — the whole of PDF reading — impossible to test in Node.
 import { ALL_PRESET_COLORS } from '../annotate/types';
-import { ID_PREFIX, INKLING_EXTRAS, QUOTE_KEY } from '../pdf/annotationFormat';
+import { ID_PREFIX, INKLING_EXTRAS, QUOTE_KEY, TAPE_KEY } from '../pdf/annotationFormat';
 import { groupIntoLines, quoteBetween, type PositionedBox } from '../pdf/textLines';
 import type { ExtractedAnnotation } from './extractFormat';
 
@@ -203,6 +203,11 @@ function readAnnotationDict(dict: PDFDict, pageNumber: number): Pending | null {
 	// stored with it — so no text layer is needed to recover it, and a
 	// scanned page reads back exactly as well as a typeset one.
 	const stored = dict.lookupMaybe(PDFName.of(INKLING_EXTRAS), PDFDict);
+	// A washi tape is a cover, not a mark: it says nothing about the text
+	// under it, which is whatever its highlights and notes already extract.
+	// Left in, it would come back as an entry quoting the very words it was
+	// laid over to hide.
+	if (stored?.has(PDFName.of(TAPE_KEY))) return null;
 	const quote = stored ? textOf(stored, QUOTE_KEY) : '';
 
 	return {

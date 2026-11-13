@@ -498,6 +498,7 @@ export class PdfAnnotateView extends FileView {
 			onGoToPage: (pageNumber) => this.scrollToPage(pageNumber),
 			onToggleNavigation: () => this.toggleNavigationPanel(),
 			onEditNote: (pageNumber, point, existing) => this.editNote(pageNumber, point, existing),
+			supportsTape: true,
 			isPressureEnabled: () => getSettings().pressure,
 			getPenButtonTools: () => ({
 				barrel: getSettings().penButtonBarrel,

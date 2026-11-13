@@ -1,7 +1,8 @@
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFObject, PDFPage, PDFRef, PDFStream, PDFString } from 'pdf-lib';
 import { boundingBox } from '../annotate/geometry';
 import { drawsAsOutline, hasPressure, outlineSegments, smoothedPath } from '../annotate/stroke';
-import { ID_PREFIX, INKLING_EXTRAS, PRESSURE_KEY, QUOTE_KEY } from './annotationFormat';
+import { tapeDesignFor, tapeSegments } from '../annotate/tape';
+import { ID_PREFIX, INKLING_EXTRAS, PRESSURE_KEY, QUOTE_KEY, TAPE_KEY } from './annotationFormat';
 import type { TouchFn } from './changeSet';
 import { arrowHeadOps, ellipseOps, moveLineOps, noteMarkerOps, pathOps, rectangleOps } from './contentStream';
 import {
@@ -224,6 +225,57 @@ function writeStroke(pdfDoc: PDFDocument, page: PDFPage, stroke: StrokeAnnotatio
 	}
 
 	tagAndAdd(pdfDoc, page, stroke.id, withSharedFields(fields, stroke));
+}
+
+// A washi tape: an Ink annotation written *hidden*.
+//
+// Inkling draws its own annotations through its overlay and strips them out
+// of the copy pdf.js renders (see stripInklingAnnotations), so the Hidden flag
+// costs it nothing. What it does is tell every other reader to skip the
+// annotation entirely — not to draw it, print it, or let anyone interact with
+// it. A tape exists to be tapped away in Inkling; in any other reader it would
+// be a patch of paper-coloured paint that could never be lifted, covering the
+// text it was meant to quiz someone on.
+//
+// The appearance stream is still written, as a flat fill of the tape's colour:
+// a reader that ignores the flag shows a plain band rather than nothing or a
+// broken box. The pattern is not in it; it lives in Inkling's own drawing code
+// and is looked up from the colour.
+const FLAG_HIDDEN = 2;
+
+function writeTape(pdfDoc: PDFDocument, page: PDFPage, tape: StrokeAnnotation): void {
+	const [r, g, b] = hexToRgb(tape.color);
+	const box = boundingBox(tape);
+	// A full width, not the half a stroke gets: the outside edge of a bend is
+	// pushed out past the pen's path by up to a whole half-width again.
+	const pad = tape.width;
+	const bbox = [box.minX - pad, box.minY - pad, box.maxX + pad, box.maxY + pad];
+
+	const content = [...fillHeader(tape.color), pathOps(tapeSegments(tape.points, tape.width)), 'h', 'f'].join('\n');
+	const apRef = buildAppearanceStream(pdfDoc, bbox, content);
+
+	tagAndAdd(
+		pdfDoc,
+		page,
+		tape.id,
+		withSharedFields(
+			{
+				Type: 'Annot',
+				Subtype: 'Ink',
+				Rect: bbox,
+				// The pen's path, for a reader that wants the line the tape
+				// follows; the band around it is derived, as for a pen stroke.
+				InkList: [tape.points.flatMap((p) => [p.x, p.y])],
+				C: [r, g, b],
+				CA: 1,
+				BS: { W: tape.width },
+				F: FLAG_HIDDEN,
+				AP: { N: apRef },
+				[INKLING_EXTRAS]: { [TAPE_KEY]: PDFString.of(tapeDesignFor(tape.color).pattern) },
+			},
+			tape,
+		),
+	);
 }
 
 function writeShape(pdfDoc: PDFDocument, page: PDFPage, shape: ShapeAnnotation): void {
@@ -552,7 +604,7 @@ export function writeInklingAnnotations(
 	}
 	for (const item of plan) {
 		if (item instanceof PDFRef) page.node.addAnnot(item);
-		else if (item.kind === 'stroke') writeStroke(pdfDoc, page, item);
+		else if (item.kind === 'stroke') (item.tool === 'tape' ? writeTape : writeStroke)(pdfDoc, page, item);
 		else if (item.kind === 'note') writeNote(pdfDoc, page, item);
 		else writeShape(pdfDoc, page, item);
 	}
@@ -643,6 +695,13 @@ function readOne(id: string, dict: PDFDict): Annotation | null {
 			if (x !== undefined && y !== undefined) points.push({ x, y });
 		}
 		if (points.length < 2) return null;
+
+		// A tape says so in its private dict and carries no pressure, so it
+		// is settled before the opacity and pressure below, which only mean
+		// something for ink.
+		if (dict.lookupMaybe(PDFName.of(INKLING_EXTRAS), PDFDict)?.has(PDFName.of(TAPE_KEY))) {
+			return { id, kind: 'stroke', tool: 'tape', color, width, points };
+		}
 
 		const opacity = dict.lookupMaybe(PDFName.of('CA'), PDFNumber)?.asNumber() ?? 1;
 		const tool = opacity <= HIGHLIGHTER_OPACITY_MAX ? 'highlighter' : 'pen';

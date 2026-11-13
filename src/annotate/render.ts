@@ -1,5 +1,6 @@
 import { boundingBox, unionBoundingBox } from './geometry';
 import { drawsAsOutline, getInkStyleRevision, outlineSegments, smoothedPath } from './stroke';
+import { drawTape } from './tapeStyle';
 import { Annotation, NOTE_MARKER_SIZE, Point, Rect, StrokeAnnotation } from './types';
 
 const SELECTION_COLOR = '#1971c2';
@@ -185,7 +186,17 @@ function drawNoteMarker(ctx: CanvasRenderingContext2D, at: Point, color: string)
 	ctx.restore();
 }
 
-function drawAnnotation(ctx: CanvasRenderingContext2D, annotation: Annotation, cache: boolean): void {
+// Tapes that have been tapped, and so are showing what is under them. Held by
+// the controller for as long as the page is open and never saved: reopening
+// a PDF covers every tape again, which is what a tape is for.
+const NONE_REVEALED: ReadonlySet<string> = new Set();
+
+function drawAnnotation(
+	ctx: CanvasRenderingContext2D,
+	annotation: Annotation,
+	cache: boolean,
+	revealed: ReadonlySet<string> = NONE_REVEALED,
+): void {
 	ctx.save();
 	ctx.strokeStyle = annotation.color;
 	ctx.lineWidth = annotation.width;
@@ -210,6 +221,12 @@ function drawAnnotation(ctx: CanvasRenderingContext2D, annotation: Annotation, c
 
 	if (annotation.kind === 'note') {
 		drawNoteMarker(ctx, annotation.at, annotation.color);
+		ctx.restore();
+		return;
+	}
+
+	if (annotation.kind === 'stroke' && annotation.tool === 'tape') {
+		drawTape(ctx, annotation, revealed.has(annotation.id), cache);
 		ctx.restore();
 		return;
 	}
@@ -331,11 +348,11 @@ export interface OverlayOptions {
 // accumulates more ink: without it, every single pointermove of a new
 // stroke had to redraw every *previous* stroke on the page too, so drawing
 // got measurably laggier the longer a note-taking session went on.
-export function renderBase(ctx: CanvasRenderingContext2D, annotations: Annotation[]): void {
+export function renderBase(ctx: CanvasRenderingContext2D, annotations: Annotation[], revealed: ReadonlySet<string> = NONE_REVEALED): void {
 	const { canvas } = ctx;
 	ctx.clearRect(0, 0, canvas.width, canvas.height);
 	for (const annotation of annotations) {
-		if (!isHighlight(annotation)) drawAnnotation(ctx, annotation, true);
+		if (!isHighlight(annotation)) drawAnnotation(ctx, annotation, true, revealed);
 	}
 }
 

@@ -188,3 +188,41 @@ describe('collectAnnotations, reading what other software wrote', () => {
 		expect(found[0]?.color).toBe('#808080');
 	});
 });
+
+describe('collectAnnotations and washi tape', () => {
+	async function pageWithTapeAndHighlight(): Promise<ArrayBuffer> {
+		const doc = await PDFDocument.create();
+		const page = doc.addPage([612, 792]);
+		const font = await doc.embedFont(StandardFonts.Helvetica);
+		page.drawText(TEXT, { x: 50, y: 700, size: 12, font });
+
+		const tape: Annotation = {
+			id: 'ink-tape',
+			kind: 'stroke',
+			tool: 'tape',
+			color: '#7bd3b0',
+			width: 24,
+			points: [{ x: 45, y: 706 }, { x: 400, y: 706 }],
+		};
+		const highlight: Annotation = {
+			id: 'ink-hl',
+			kind: 'stroke',
+			tool: 'highlighter',
+			color: '#ffff00',
+			width: 14,
+			points: [{ x: 50, y: 705 }, { x: 400, y: 705 }],
+			quote: TEXT,
+		};
+		// The tape is laid over the highlight, which is the whole use of it.
+		writeInklingAnnotations(doc, 0, [highlight, tape]);
+
+		const bytes = await doc.save();
+		return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+	}
+
+	it('still extracts the highlight under a tape, and nothing for the tape', async () => {
+		const found = await collectAnnotations(await pageWithTapeAndHighlight());
+		expect(found.map((entry) => entry.id)).toEqual(['ink-hl']);
+		expect(found[0]?.quote).toBe(TEXT);
+	});
+});
