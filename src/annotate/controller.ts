@@ -26,7 +26,13 @@ import {
 import { MIN_VIEW_ZOOM, stepLadder } from './zoomLadder';
 import { recognizeShape } from './recognize';
 import { isTap } from './tape';
-import { handleRects, isHighlight, renderBase, renderHighlights, renderOverlay } from './render';
+import {
+	handleRects,
+	isHighlight,
+	renderBase,
+	renderHighlights,
+	renderOverlay,
+} from './render';
 import { AnnotationStore } from './store';
 import { HistoryStack } from './history';
 import { ToolState } from './toolState';
@@ -77,7 +83,13 @@ export interface PenButtonTools {
 }
 
 type DragMode =
-	| { kind: 'draw'; tool: DrawToolType; points: Point[]; lastMovedAt: number; startStamp: number | null }
+	| {
+			kind: 'draw';
+			tool: DrawToolType;
+			points: Point[];
+			lastMovedAt: number;
+			startStamp: number | null;
+	  }
 	| { kind: 'shape'; tool: ShapeToolType; start: Point; end: Point }
 	| { kind: 'erase'; before: Annotation[] }
 	| { kind: 'lasso'; points: Point[] }
@@ -85,8 +97,20 @@ type DragMode =
 	// every move can be limited against them without recomputing the union
 	// of every selected annotation on each pointer sample. Resize carries
 	// one for the same reason.
-	| { kind: 'move'; before: Annotation[]; ids: string[]; origin: Point; box: Rect }
-	| { kind: 'resize'; before: Annotation[]; ids: string[]; box: Rect; handle: HandleName };
+	| {
+			kind: 'move';
+			before: Annotation[];
+			ids: string[];
+			origin: Point;
+			box: Rect;
+	  }
+	| {
+			kind: 'resize';
+			before: Annotation[];
+			ids: string[];
+			box: Rect;
+			handle: HandleName;
+	  };
 
 interface PageMount {
 	// Two stacked canvases rather than one: `base` holds committed
@@ -192,7 +216,10 @@ export interface AnnotationControllerOptions {
 	// The view zoom at which `placeholder`'s whole page fits the pane's
 	// height, and what to hold still while getting there (the page's top
 	// edge at the top of the pane).
-	fitPage?: (placeholder: HTMLElement) => { zoom: number; hold: ViewZoomHold };
+	fitPage?: (placeholder: HTMLElement) => {
+		zoom: number;
+		hold: ViewZoomHold;
+	};
 	// Canvas pixels per unit of pen width on a page, asked each time ink is
 	// made. Omitted, a unit is one pixel. A host that re-backs a page at a
 	// different resolution — the PDF view does, whenever a zoom sharpens one
@@ -208,7 +235,11 @@ export interface AnnotationControllerOptions {
 	// following the pen's natural wobble. Returning null (no text under the
 	// stroke, or the host view doesn't support this — e.g. Markdown ink
 	// blocks later) falls back to committing the raw stroke as drawn.
-	onSnapHighlighterStroke?: (pageNumber: number, points: Point[], color: string) => Annotation[] | null;
+	onSnapHighlighterStroke?: (
+		pageNumber: number,
+		points: Point[],
+		color: string,
+	) => Annotation[] | null;
 	// Asks the host surface to scroll to a page. Only the host knows how
 	// its pages are laid out — a Markdown ink block has exactly one and
 	// omits this, which is what hides the toolbar page controls there.
@@ -221,7 +252,11 @@ export interface AnnotationControllerOptions {
 	// view and into Markdown ink blocks alike — so the editor belongs to
 	// whoever mounted it. A host that does not supply this has no note
 	// tool at all, which is how ink blocks stay out of it.
-	onEditNote?: (pageNumber: number, point: Point, existing: string) => Promise<string | null>;
+	onEditNote?: (
+		pageNumber: number,
+		point: Point,
+		existing: string,
+	) => Promise<string | null>;
 	// Whether this surface can keep a washi tape. A tape is saved as its own
 	// kind of annotation (see pdf/annotationSync.ts); a Markdown ink block
 	// saves in a format with no such thing, so only the PDF view says yes.
@@ -264,7 +299,11 @@ export interface AnnotationControllerOptions {
 	getHoldFingers?: () => 0 | 1 | 2;
 	onPageHoldStart?: (pageNumber: number, point: Point) => void;
 	onPageHoldMove?: (pageNumber: number, point: Point) => void;
-	onPageHoldEnd?: (pageNumber: number, point: Point, cancelled: boolean) => void;
+	onPageHoldEnd?: (
+		pageNumber: number,
+		point: Point,
+		cancelled: boolean,
+	) => void;
 }
 
 // The shared annotation tool module — owns tool/color/width state, an
@@ -287,7 +326,10 @@ export class AnnotationController {
 	private readonly toolState: ToolState;
 	private readonly unsubscribeToolState: () => void;
 
-	private selection: { pageNumber: number; ids: Set<string> } = { pageNumber: -1, ids: new Set() };
+	private selection: { pageNumber: number; ids: Set<string> } = {
+		pageNumber: -1,
+		ids: new Set(),
+	};
 	private drag: { pageNumber: number; mode: DragMode } | null = null;
 	private canManagePages = false;
 	// Set when the document cannot be safely written to (see
@@ -347,7 +389,8 @@ export class AnnotationController {
 				const tool = this.toolState.getTool();
 				// A selection only survives in the one tool that can act on
 				// it, and the eraser outline only while the eraser is held.
-				if (tool !== 'select') this.selection = { pageNumber: -1, ids: new Set() };
+				if (tool !== 'select')
+					this.selection = { pageNumber: -1, ids: new Set() };
 				if (tool !== 'eraser') this.eraserCursor = null;
 			}
 			this.notify();
@@ -357,23 +400,37 @@ export class AnnotationController {
 
 	// ---- Page lifecycle ----
 
-	mountPage(pageNumber: number, host: HTMLElement, width: number, height: number): void {
+	mountPage(
+		pageNumber: number,
+		host: HTMLElement,
+		width: number,
+		height: number,
+	): void {
 		this.unmountPage(pageNumber);
 
-		const baseCanvas = host.createEl('canvas', { cls: 'inkling-annotation-layer inkling-annotation-base' });
+		const baseCanvas = host.createEl('canvas', {
+			cls: 'inkling-annotation-layer inkling-annotation-base',
+		});
 		baseCanvas.width = width;
 		baseCanvas.height = height;
 
 		// The overlay sits on top and is the only one that receives pointer
 		// events — the base layer is purely a picture underneath it.
-		const overlayCanvas = host.createEl('canvas', { cls: 'inkling-annotation-layer inkling-annotation-overlay' });
+		const overlayCanvas = host.createEl('canvas', {
+			cls: 'inkling-annotation-layer inkling-annotation-overlay',
+		});
 		overlayCanvas.width = width;
 		overlayCanvas.height = height;
 
 		const base = baseCanvas.getContext('2d');
-		if (!base) throw new Error('Inkling: could not acquire a 2D context for the annotation layer.');
+		if (!base)
+			throw new Error(
+				'Inkling: could not acquire a 2D context for the annotation layer.',
+			);
 
-		const detach = attachPointerGestures(overlayCanvas, () => this.getHandlersFor(pageNumber));
+		const detach = attachPointerGestures(overlayCanvas, () =>
+			this.getHandlersFor(pageNumber),
+		);
 		this.pages.set(pageNumber, {
 			base,
 			overlayCanvas,
@@ -414,7 +471,12 @@ export class AnnotationController {
 	// this is purely a resolution/coordinate-space migration — the on-disk
 	// PDF-space representation is unchanged, so it must not register as an
 	// edit (no history entry, no autosave).
-	resizePage(pageNumber: number, width: number, height: number, annotations: Annotation[]): void {
+	resizePage(
+		pageNumber: number,
+		width: number,
+		height: number,
+		annotations: Annotation[],
+	): void {
 		const mount = this.pages.get(pageNumber);
 		if (!mount) return;
 		mount.base.canvas.width = width;
@@ -483,7 +545,8 @@ export class AnnotationController {
 
 	unmountAll(): void {
 		this.cancelScheduledOverlayRedraw();
-		for (const pageNumber of [...this.pages.keys()]) this.unmountPage(pageNumber);
+		for (const pageNumber of [...this.pages.keys()])
+			this.unmountPage(pageNumber);
 		this.selection = { pageNumber: -1, ids: new Set() };
 		this.drag = null;
 		this.eraserCursor = null;
@@ -553,7 +616,9 @@ export class AnnotationController {
 	}
 
 	getColor(): string {
-		return this.usesPenInstead() ? this.toolState.styleOf('pen').color : this.toolState.getColor();
+		return this.usesPenInstead()
+			? this.toolState.styleOf('pen').color
+			: this.toolState.getColor();
 	}
 
 	setColor(color: string): void {
@@ -563,7 +628,9 @@ export class AnnotationController {
 	}
 
 	getWidth(): number {
-		return this.usesPenInstead() ? this.toolState.styleOf('pen').width : this.toolState.getWidth();
+		return this.usesPenInstead()
+			? this.toolState.styleOf('pen').width
+			: this.toolState.getWidth();
 	}
 
 	// The toolbar width in a page's own canvas pixels — see getInkScale.
@@ -578,7 +645,10 @@ export class AnnotationController {
 		this.toolState.setWidth(width);
 		// Clamped by the shared state, so read it back rather than restyling
 		// a selection with a value it refused.
-		if (this.selection.ids.size > 0) this.restyleSelection({ width: this.inkWidth(this.selection.pageNumber) });
+		if (this.selection.ids.size > 0)
+			this.restyleSelection({
+				width: this.inkWidth(this.selection.pageNumber),
+			});
 	}
 
 	hasSelection(): boolean {
@@ -651,7 +721,8 @@ export class AnnotationController {
 		const ratio = next / this.viewZoom;
 		this.viewZoom = next;
 		host(next, hold);
-		for (const mount of this.pages.values()) rescaleZoomTranslate(mount.content, ratio);
+		for (const mount of this.pages.values())
+			rescaleZoomTranslate(mount.content, ratio);
 		this.notify();
 	}
 
@@ -670,13 +741,18 @@ export class AnnotationController {
 		const host = this.options.setViewZoom;
 		if (!host || !(paneRatio > 0)) return;
 		const previous = this.viewZoom;
-		const next = paneRatio > 1 ? Math.min(1, Math.max(MIN_VIEW_ZOOM, previous / paneRatio)) : previous;
+		const next =
+			paneRatio > 1
+				? Math.min(1, Math.max(MIN_VIEW_ZOOM, previous / paneRatio))
+				: previous;
 		if (next !== previous) {
 			this.viewZoom = next;
 			host(next);
 		}
 		const boxRatio = (paneRatio * next) / previous;
-		if (Math.abs(boxRatio - 1) > 1e-9) for (const mount of this.pages.values()) rescaleZoomTranslate(mount.content, boxRatio);
+		if (Math.abs(boxRatio - 1) > 1e-9)
+			for (const mount of this.pages.values())
+				rescaleZoomTranslate(mount.content, boxRatio);
 		if (next !== previous) this.notify();
 	}
 
@@ -690,13 +766,20 @@ export class AnnotationController {
 			minView: this.supportsViewZoom() ? MIN_VIEW_ZOOM : 1,
 			maxPage: MAX_ZOOM,
 		});
-		if (next.view !== this.viewZoom) this.applyViewZoom(next.view, this.viewportHold(target.mount, target.placeholder));
+		if (next.view !== this.viewZoom)
+			this.applyViewZoom(
+				next.view,
+				this.viewportHold(target.mount, target.placeholder),
+			);
 		if (next.page !== page) this.zoomCurrentPage(() => next.page);
 	}
 
 	// Whether this surface can go full screen at all — only the PDF view.
 	supportsFullscreen(): boolean {
-		return this.options.isFullscreen !== undefined && this.options.toggleFullscreen !== undefined;
+		return (
+			this.options.isFullscreen !== undefined &&
+			this.options.toggleFullscreen !== undefined
+		);
 	}
 
 	isFullscreen(): boolean {
@@ -740,7 +823,11 @@ export class AnnotationController {
 		this.options.refitWidth?.();
 		this.resetAllPageZooms();
 		const target = this.currentPageTarget();
-		if (target) this.applyViewZoom(1, this.viewportHold(target.mount, target.placeholder));
+		if (target)
+			this.applyViewZoom(
+				1,
+				this.viewportHold(target.mount, target.placeholder),
+			);
 		else this.applyViewZoom(1);
 		if (target) this.options.centerPage?.(target.placeholder);
 	}
@@ -750,7 +837,9 @@ export class AnnotationController {
 	// this is the same as fit width.
 	fitPage(): void {
 		const target = this.currentPageTarget();
-		const fit = target ? this.options.fitPage?.(target.placeholder) : undefined;
+		const fit = target
+			? this.options.fitPage?.(target.placeholder)
+			: undefined;
 		if (!target || !fit) {
 			this.fitWidth();
 			return;
@@ -773,7 +862,10 @@ export class AnnotationController {
 			const placeholder = mount.content.parentElement;
 			if (!placeholder) continue;
 			const rect = placeholder.getBoundingClientRect();
-			zoomAbout(mount.content, placeholder, 1, { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+			zoomAbout(mount.content, placeholder, 1, {
+				x: rect.left + rect.width / 2,
+				y: rect.top + rect.height / 2,
+			});
 			// Same signal a settled pinch sends, so the page's canvas drops
 			// back to its normal resolution too.
 			this.options.onZoomSettled?.(pageNumber, 1);
@@ -790,10 +882,17 @@ export class AnnotationController {
 			this.zoomCurrentPage(() => 1);
 			return;
 		}
-		if (target && this.viewZoom < 1) this.applyViewZoom(1, this.viewportHold(target.mount, target.placeholder));
+		if (target && this.viewZoom < 1)
+			this.applyViewZoom(
+				1,
+				this.viewportHold(target.mount, target.placeholder),
+			);
 	}
 
-	private currentPageTarget(): { mount: PageMount; placeholder: HTMLElement } | null {
+	private currentPageTarget(): {
+		mount: PageMount;
+		placeholder: HTMLElement;
+	} | null {
 		const pageNumber = this.options.getCurrentPage?.();
 		if (pageNumber == null) return null;
 		const mount = this.pages.get(pageNumber);
@@ -805,11 +904,24 @@ export class AnnotationController {
 	// A toolbar or keyboard view zoom has no fingers to aim at, so it holds
 	// the point at the middle of what the reader can see — measured on the
 	// scrolling container when it has one, otherwise on the page itself.
-	private viewportHold(mount: PageMount, placeholder: HTMLElement): ViewZoomHold {
-		const viewport = (findScrollParent(mount.content) ?? placeholder).getBoundingClientRect();
-		const screen = { x: viewport.left + viewport.width / 2, y: viewport.top + viewport.height / 2 };
+	private viewportHold(
+		mount: PageMount,
+		placeholder: HTMLElement,
+	): ViewZoomHold {
+		const viewport = (
+			findScrollParent(mount.content) ?? placeholder
+		).getBoundingClientRect();
+		const screen = {
+			x: viewport.left + viewport.width / 2,
+			y: viewport.top + viewport.height / 2,
+		};
 		const rect = placeholder.getBoundingClientRect();
-		return { placeholder, fx: (screen.x - rect.left) / (rect.width || 1), fy: (screen.y - rect.top) / (rect.height || 1), screen };
+		return {
+			placeholder,
+			fx: (screen.x - rect.left) / (rect.width || 1),
+			fy: (screen.y - rect.top) / (rect.height || 1),
+			screen,
+		};
 	}
 
 	private zoomCurrentPage(next: (scale: number) => number): void {
@@ -820,8 +932,16 @@ export class AnnotationController {
 		if (!mount || !placeholder) return;
 
 		const rect = placeholder.getBoundingClientRect();
-		const centre = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-		const scale = zoomAbout(mount.content, placeholder, next(currentZoom(mount.content)), centre);
+		const centre = {
+			x: rect.left + rect.width / 2,
+			y: rect.top + rect.height / 2,
+		};
+		const scale = zoomAbout(
+			mount.content,
+			placeholder,
+			next(currentZoom(mount.content)),
+			centre,
+		);
 		this.zoomByPage.set(pageNumber, scale);
 		this.notify();
 		// Same signal a settled pinch sends, so the page re-renders at a
@@ -881,7 +1001,12 @@ export class AnnotationController {
 	}
 
 	getPageTemplates(): PageTemplateChoices {
-		return this.options.getPageTemplates?.() ?? { templates: [], defaultId: '' };
+		return (
+			this.options.getPageTemplates?.() ?? {
+				templates: [],
+				defaultId: '',
+			}
+		);
 	}
 
 	canInvert(): boolean {
@@ -905,7 +1030,10 @@ export class AnnotationController {
 	}
 
 	goToPage(pageNumber: number): void {
-		const clamped = Math.min(Math.max(Math.round(pageNumber), 1), this.pageCount);
+		const clamped = Math.min(
+			Math.max(Math.round(pageNumber), 1),
+			this.pageCount,
+		);
 		if (!Number.isFinite(clamped)) return;
 		this.options.onGoToPage?.(clamped);
 	}
@@ -934,7 +1062,8 @@ export class AnnotationController {
 		const pageNumber = this.options.getCurrentPage?.();
 		if (pageNumber == null) return;
 		this.store.clearPage(pageNumber);
-		if (this.selection.pageNumber === pageNumber) this.selection = { pageNumber: -1, ids: new Set() };
+		if (this.selection.pageNumber === pageNumber)
+			this.selection = { pageNumber: -1, ids: new Set() };
 		this.redrawOverlay(pageNumber);
 		this.notify();
 	}
@@ -968,8 +1097,10 @@ export class AnnotationController {
 
 	private getHandlersFor(pageNumber: number): GestureHandlers {
 		return {
-			onStart: (point, event) => this.handleStart(pageNumber, point, event.timeStamp),
-			onMove: (point, event) => this.handleMove(pageNumber, point, event.timeStamp),
+			onStart: (point, event) =>
+				this.handleStart(pageNumber, point, event.timeStamp),
+			onMove: (point, event) =>
+				this.handleMove(pageNumber, point, event.timeStamp),
 			onEnd: (point) => this.handleEnd(pageNumber, point),
 			onCancel: () => this.handleCancel(pageNumber),
 			onHover: (point) => this.handleHover(pageNumber, point),
@@ -978,17 +1109,22 @@ export class AnnotationController {
 				this.zoomByPage.set(pageNumber, scale);
 				this.notify();
 			},
-			onZoomEnd: (scale) => this.options.onZoomSettled?.(pageNumber, scale),
+			onZoomEnd: (scale) =>
+				this.options.onZoomSettled?.(pageNumber, scale),
 			isPageZoomLocked: () => this.pageZoomLocked,
 			getHoldFingers: () => this.options.getHoldFingers?.() ?? 0,
-			onHoldStart: (point) => this.options.onPageHoldStart?.(pageNumber, point),
-			onHoldMove: (point) => this.options.onPageHoldMove?.(pageNumber, point),
-			onHoldEnd: (point, cancelled) => this.options.onPageHoldEnd?.(pageNumber, point, cancelled),
+			onHoldStart: (point) =>
+				this.options.onPageHoldStart?.(pageNumber, point),
+			onHoldMove: (point) =>
+				this.options.onPageHoldMove?.(pageNumber, point),
+			onHoldEnd: (point, cancelled) =>
+				this.options.onPageHoldEnd?.(pageNumber, point, cancelled),
 			// Offered only when the host can actually shrink its pages.
 			...(this.options.setViewZoom
 				? {
 						getViewZoom: () => this.viewZoom,
-						setViewZoom: (zoom: number, hold: ViewZoomHold) => this.applyViewZoom(zoom, hold),
+						setViewZoom: (zoom: number, hold: ViewZoomHold) =>
+							this.applyViewZoom(zoom, hold),
 						isViewZoomLocked: () => this.viewZoomLocked,
 					}
 				: {}),
@@ -1032,7 +1168,9 @@ export class AnnotationController {
 			if (this.sideMask & 2) held.push(tools.barrel);
 			if (this.sideMask & 4) held.push(tools.middle);
 		}
-		const tool = held.find((candidate): candidate is ToolType => candidate !== 'none');
+		const tool = held.find(
+			(candidate): candidate is ToolType => candidate !== 'none',
+		);
 		if (tool) this.toolState.beginTemporaryTool(tool);
 		else this.toolState.endTemporaryTool();
 	}
@@ -1042,13 +1180,50 @@ export class AnnotationController {
 		// Bound once so the switch below narrows it — a getter call in each
 		// case would be opaque to the narrowing and force a cast.
 		const tool = this.getTool();
+		// A finger tap on a tape should toggle it, regardless of which tool
+		// is currently active (pen, highlighter, select, etc.). The tape tool
+		// already handles this via commitTape, so we only intercept here for
+		// the other tools.
+		if (tool !== 'tape') {
+			const clamped = this.clampToPage(pageNumber, point);
+			const hitTape = [...this.store.getPage(pageNumber)]
+				.reverse()
+				.find(
+					(a) =>
+						a.kind === 'stroke' &&
+						a.tool === 'tape' &&
+						hitTestAnnotation(a, clamped),
+				);
+
+			if (hitTape) {
+				// Start a dummy drag mode so handleEnd knows to evaluate the tap.
+				this.drag = {
+					pageNumber,
+					mode: {
+						kind: 'draw',
+						tool: tool as DrawToolType,
+						points: [clamped],
+						lastMovedAt: performance.now(),
+						startStamp: stamp,
+					},
+				};
+				this.redrawOverlay(pageNumber);
+				return;
+			}
+		}
 		switch (tool) {
 			case 'pen':
 			case 'highlighter':
 			case 'tape':
 				this.drag = {
 					pageNumber,
-					mode: { kind: 'draw', tool, points: [this.clampToPage(pageNumber, point)], lastMovedAt: performance.now(), startStamp: stamp },
+					mode: {
+						kind: 'draw',
+						tool,
+						points: [this.clampToPage(pageNumber, point)],
+						lastMovedAt: performance.now(),
+						startStamp: stamp,
+					},
 				};
 				break;
 			case 'line':
@@ -1057,11 +1232,22 @@ export class AnnotationController {
 			case 'arrow':
 				this.drag = {
 					pageNumber,
-					mode: { kind: 'shape', tool, start: this.clampToPage(pageNumber, point), end: this.clampToPage(pageNumber, point) },
+					mode: {
+						kind: 'shape',
+						tool,
+						start: this.clampToPage(pageNumber, point),
+						end: this.clampToPage(pageNumber, point),
+					},
 				};
 				break;
 			case 'eraser':
-				this.drag = { pageNumber, mode: { kind: 'erase', before: this.store.getPage(pageNumber) } };
+				this.drag = {
+					pageNumber,
+					mode: {
+						kind: 'erase',
+						before: this.store.getPage(pageNumber),
+					},
+				};
 				this.applyErase(pageNumber, point);
 				break;
 			case 'note':
@@ -1079,17 +1265,33 @@ export class AnnotationController {
 	private handleSelectStart(pageNumber: number, point: Point): void {
 		const annotations = this.store.getPage(pageNumber);
 
-		if (this.selection.pageNumber === pageNumber && this.selection.ids.size > 0) {
-			const boxes = annotations.filter((a) => this.selection.ids.has(a.id)).map(boundingBox);
+		if (
+			this.selection.pageNumber === pageNumber &&
+			this.selection.ids.size > 0
+		) {
+			const boxes = annotations
+				.filter((a) => this.selection.ids.has(a.id))
+				.map(boundingBox);
 			if (boxes.length > 0) {
 				const box = unionBoundingBox(boxes);
 				const handles = handleRects(box);
 				for (const name of Object.keys(handles) as HandleName[]) {
 					const rect = handles[name];
-					if (point.x >= rect.minX && point.x <= rect.maxX && point.y >= rect.minY && point.y <= rect.maxY) {
+					if (
+						point.x >= rect.minX &&
+						point.x <= rect.maxX &&
+						point.y >= rect.minY &&
+						point.y <= rect.maxY
+					) {
 						this.drag = {
 							pageNumber,
-							mode: { kind: 'resize', before: annotations, ids: [...this.selection.ids], box, handle: name },
+							mode: {
+								kind: 'resize',
+								before: annotations,
+								ids: [...this.selection.ids],
+								box,
+								handle: name,
+							},
 						};
 						return;
 					}
@@ -1097,7 +1299,9 @@ export class AnnotationController {
 			}
 		}
 
-		const hit = [...annotations].reverse().find((a) => hitTestAnnotation(a, point));
+		const hit = [...annotations]
+			.reverse()
+			.find((a) => hitTestAnnotation(a, point));
 		// Tapping an existing note with the select tool reopens it. Anything
 		// else selects and drags as before — a note that could only ever be
 		// read would be a note you could not correct.
@@ -1118,7 +1322,11 @@ export class AnnotationController {
 					before: annotations,
 					ids: moving,
 					origin: point,
-					box: unionBoundingBox(annotations.filter((a) => moving.includes(a.id)).map(boundingBox)),
+					box: unionBoundingBox(
+						annotations
+							.filter((a) => moving.includes(a.id))
+							.map(boundingBox),
+					),
 				},
 			};
 			return;
@@ -1144,22 +1352,41 @@ export class AnnotationController {
 	// The two clamps a selection needs, against the same bounds drawing uses.
 	// Both no-op when the page is not mounted, since there is then nothing to
 	// measure against and refusing to move would be worse than not clamping.
-	private clampMove(pageNumber: number, box: Rect, dx: number, dy: number): { dx: number; dy: number } {
+	private clampMove(
+		pageNumber: number,
+		box: Rect,
+		dx: number,
+		dy: number,
+	): { dx: number; dy: number } {
 		const mount = this.pages.get(pageNumber);
 		if (!mount) return { dx, dy };
-		return clampTranslation(box, dx, dy, mount.base.canvas.width, mount.base.canvas.height);
+		return clampTranslation(
+			box,
+			dx,
+			dy,
+			mount.base.canvas.width,
+			mount.base.canvas.height,
+		);
 	}
 
 	private clampRect(pageNumber: number, rect: Rect): Rect {
 		const mount = this.pages.get(pageNumber);
 		if (!mount) return rect;
-		return clampRectToBounds(rect, mount.base.canvas.width, mount.base.canvas.height);
+		return clampRectToBounds(
+			rect,
+			mount.base.canvas.width,
+			mount.base.canvas.height,
+		);
 	}
 
 	private clampToPage(pageNumber: number, point: Point): Point {
 		const mount = this.pages.get(pageNumber);
 		if (!mount) return point;
-		return clampPointToBounds(point, mount.base.canvas.width, mount.base.canvas.height);
+		return clampPointToBounds(
+			point,
+			mount.base.canvas.width,
+			mount.base.canvas.height,
+		);
 	}
 
 	private handleMove(pageNumber: number, point: Point, stamp: number): void {
@@ -1190,7 +1417,11 @@ export class AnnotationController {
 				// timestamps coarsely can give several real samples the same
 				// stamp, and replacing on every one of them would eat the
 				// beginning of the stroke.
-				if (mode.startStamp !== null && mode.points.length === 1 && stamp === mode.startStamp) {
+				if (
+					mode.startStamp !== null &&
+					mode.points.length === 1 &&
+					stamp === mode.startStamp
+				) {
 					mode.startStamp = null;
 					mode.points[0] = clamped;
 					this.scheduleOverlayRedraw(pageNumber);
@@ -1199,7 +1430,11 @@ export class AnnotationController {
 				mode.startStamp = null;
 
 				const previous = mode.points[mode.points.length - 1];
-				if (!previous || Math.hypot(clamped.x - previous.x, clamped.y - previous.y) > HOLD_STILLNESS_PX) {
+				if (
+					!previous ||
+					Math.hypot(clamped.x - previous.x, clamped.y - previous.y) >
+						HOLD_STILLNESS_PX
+				) {
 					mode.lastMovedAt = performance.now();
 				}
 				mode.points.push(clamped);
@@ -1229,13 +1464,24 @@ export class AnnotationController {
 					point.x - mode.origin.x,
 					point.y - mode.origin.y,
 				);
-				const next = mode.before.map((a) => (mode.ids.includes(a.id) ? translateAnnotation(a, dx, dy) : a));
+				const next = mode.before.map((a) =>
+					mode.ids.includes(a.id)
+						? translateAnnotation(a, dx, dy)
+						: a,
+				);
 				this.store.setPageLive(pageNumber, next);
 				break;
 			}
 			case 'resize': {
-				const to = this.clampRect(pageNumber, resizeRect(mode.box, mode.handle, point));
-				const next = mode.before.map((a) => (mode.ids.includes(a.id) ? scaleAnnotation(a, mode.box, to) : a));
+				const to = this.clampRect(
+					pageNumber,
+					resizeRect(mode.box, mode.handle, point),
+				);
+				const next = mode.before.map((a) =>
+					mode.ids.includes(a.id)
+						? scaleAnnotation(a, mode.box, to)
+						: a,
+				);
 				this.store.setPageLive(pageNumber, next);
 				break;
 			}
@@ -1247,15 +1493,58 @@ export class AnnotationController {
 		if (!this.drag || this.drag.pageNumber !== pageNumber) return;
 		const mode = this.drag.mode;
 
+		// A tap on an existing tape should toggle it, regardless of the current tool.
+		// We evaluate this here at the end of the gesture so we know it was a tap,
+		// not a drag, and so we can cancel the accidental ink/selection before it commits.
+		const clamped = this.clampToPage(pageNumber, point);
+
+		let startPoint: Point | null = null;
+		if (mode.kind === 'draw') startPoint = mode.points[0] ?? null;
+		else if (mode.kind === 'shape') startPoint = mode.start;
+		else if (mode.kind === 'move') startPoint = mode.origin;
+		else if (mode.kind === 'lasso') startPoint = mode.points[0] ?? null;
+
+		// If we have a start point and the finger didn't move far, check for tape.
+		// (We skip 'erase' so the eraser can still erase tapes if you tap them).
+		if (
+			startPoint &&
+			mode.kind !== 'erase' &&
+			isTap([startPoint, clamped])
+		) {
+			const hitTape = [...this.store.getPage(pageNumber)]
+				.reverse()
+				.find(
+					(a) =>
+						a.kind === 'stroke' &&
+						a.tool === 'tape' &&
+						hitTestAnnotation(a, clamped),
+				);
+
+			if (hitTape) {
+				// It's a tape tap! Toggle it and cancel the current gesture.
+				this.toggleTapeAt(pageNumber, clamped);
+				this.drag = null;
+				this.selection = { pageNumber: -1, ids: new Set() }; // clear any accidental select
+				this.redrawOverlay(pageNumber);
+				this.notify();
+				return; // Stop here: no ink, no moving, no deleting.
+			}
+		}
+
 		switch (mode.kind) {
 			case 'draw': {
 				mode.points.push(this.clampToPage(pageNumber, point));
-				if (mode.points.length >= 2) this.commitDrawStroke(pageNumber, mode);
+				if (mode.points.length >= 2)
+					this.commitDrawStroke(pageNumber, mode);
 				break;
 			}
 			case 'shape': {
 				mode.end = this.clampToPage(pageNumber, point);
-				if (distance(mode.start, mode.end) > 2) this.commitNew(pageNumber, this.shapeFromDraft(pageNumber, mode));
+				if (distance(mode.start, mode.end) > 2)
+					this.commitNew(
+						pageNumber,
+						this.shapeFromDraft(pageNumber, mode),
+					);
 				break;
 			}
 			case 'erase':
@@ -1263,8 +1552,13 @@ export class AnnotationController {
 				break;
 			case 'lasso': {
 				const polygon = [...mode.points, point];
-				const hits = this.store.getPage(pageNumber).filter((a) => polygonEnclosesAnnotation(a, polygon));
-				this.selection = { pageNumber, ids: new Set(hits.map((a) => a.id)) };
+				const hits = this.store
+					.getPage(pageNumber)
+					.filter((a) => polygonEnclosesAnnotation(a, polygon));
+				this.selection = {
+					pageNumber,
+					ids: new Set(hits.map((a) => a.id)),
+				};
 				break;
 			}
 			case 'move':
@@ -1299,10 +1593,15 @@ export class AnnotationController {
 
 		switch (mode.kind) {
 			case 'draw':
-				if (mode.points.length >= 2) this.commitDrawStroke(pageNumber, mode);
+				if (mode.points.length >= 2)
+					this.commitDrawStroke(pageNumber, mode);
 				break;
 			case 'shape':
-				if (distance(mode.start, mode.end) > 2) this.commitNew(pageNumber, this.shapeFromDraft(pageNumber, mode));
+				if (distance(mode.start, mode.end) > 2)
+					this.commitNew(
+						pageNumber,
+						this.shapeFromDraft(pageNumber, mode),
+					);
 				break;
 			case 'erase':
 			case 'move':
@@ -1322,7 +1621,10 @@ export class AnnotationController {
 	// (see commitDrawStroke) can become several straight segments, one per
 	// text line it swept over, and all of them need to land as a single undo
 	// step rather than one each.
-	private commitNew(pageNumber: number, annotation: Annotation | Annotation[]): void {
+	private commitNew(
+		pageNumber: number,
+		annotation: Annotation | Annotation[],
+	): void {
 		const additions = Array.isArray(annotation) ? annotation : [annotation];
 		if (additions.length === 0) return;
 		const before = this.store.getPage(pageNumber);
@@ -1336,7 +1638,10 @@ export class AnnotationController {
 	// AnnotationControllerOptions.onSnapHighlighterStroke). Anything it
 	// declines to snap (not a highlighter, no text under the stroke, or no
 	// host support) commits as drawn, same as every other tool.
-	private commitDrawStroke(pageNumber: number, mode: { tool: DrawToolType; points: Point[]; lastMovedAt: number }): void {
+	private commitDrawStroke(
+		pageNumber: number,
+		mode: { tool: DrawToolType; points: Point[]; lastMovedAt: number },
+	): void {
 		if (mode.tool === 'tape') {
 			this.commitTape(pageNumber, mode.points);
 			return;
@@ -1346,7 +1651,10 @@ export class AnnotationController {
 		// Checked before the highlighter branch below only because a
 		// highlighter is never snapped — a straight yellow bar is already
 		// what the snapping it does have produces.
-		if (mode.tool === 'pen' && (this.options.isShapeRecognitionEnabled?.() ?? false)) {
+		if (
+			mode.tool === 'pen' &&
+			(this.options.isShapeRecognitionEnabled?.() ?? false)
+		) {
 			if (performance.now() - mode.lastMovedAt >= SHAPE_HOLD_MS) {
 				const recognized = recognizeShape(mode.points);
 				if (recognized) {
@@ -1365,7 +1673,11 @@ export class AnnotationController {
 		}
 
 		if (mode.tool === 'highlighter') {
-			const snapped = this.options.onSnapHighlighterStroke?.(pageNumber, mode.points, this.getColor());
+			const snapped = this.options.onSnapHighlighterStroke?.(
+				pageNumber,
+				mode.points,
+				this.getColor(),
+			);
 			if (snapped && snapped.length > 0) {
 				this.commitNew(pageNumber, snapped);
 				return;
@@ -1403,7 +1715,12 @@ export class AnnotationController {
 	private toggleTapeAt(pageNumber: number, point: Point): void {
 		const hit = [...this.store.getPage(pageNumber)]
 			.reverse()
-			.find((a) => a.kind === 'stroke' && a.tool === 'tape' && hitTestAnnotation(a, point));
+			.find(
+				(a) =>
+					a.kind === 'stroke' &&
+					a.tool === 'tape' &&
+					hitTestAnnotation(a, point),
+			);
 		if (!hit) return;
 
 		if (this.revealedTapes.has(hit.id)) this.revealedTapes.delete(hit.id);
@@ -1453,7 +1770,11 @@ export class AnnotationController {
 		} else {
 			this.store.setPageLive(
 				pageNumber,
-				before.map((annotation) => (annotation.id === existing.id ? { ...existing, note: text } : annotation)),
+				before.map((annotation) =>
+					annotation.id === existing.id
+						? { ...existing, note: text }
+						: annotation,
+				),
 			);
 		}
 		this.store.commitGesture(pageNumber, before);
@@ -1480,14 +1801,27 @@ export class AnnotationController {
 		return keepPressure ? raw : raw.map(({ x, y }) => ({ x, y }));
 	}
 
-	private strokeFromDraft(pageNumber: number, mode: { tool: DrawToolType; points: Point[] }): StrokeAnnotation {
+	private strokeFromDraft(
+		pageNumber: number,
+		mode: { tool: DrawToolType; points: Point[] },
+	): StrokeAnnotation {
 		// After shape recognition and highlighter snapping above, both of
 		// which read the full sample set and are better for it.
 		const points = this.strokePoints(mode.points);
-		return { id: createId(), kind: 'stroke', tool: mode.tool, color: this.getColor(), width: this.inkWidth(pageNumber), points };
+		return {
+			id: createId(),
+			kind: 'stroke',
+			tool: mode.tool,
+			color: this.getColor(),
+			width: this.inkWidth(pageNumber),
+			points,
+		};
 	}
 
-	private shapeFromDraft(pageNumber: number, mode: { tool: ShapeToolType; start: Point; end: Point }): ShapeAnnotation {
+	private shapeFromDraft(
+		pageNumber: number,
+		mode: { tool: ShapeToolType; start: Point; end: Point },
+	): ShapeAnnotation {
 		return {
 			id: createId(),
 			kind: 'shape',
@@ -1500,14 +1834,26 @@ export class AnnotationController {
 	}
 
 	private applyErase(pageNumber: number, point: Point): void {
-		this.store.setPageLive(pageNumber, eraseAt(this.store.getPage(pageNumber), point, this.eraserRadius(pageNumber)));
+		this.store.setPageLive(
+			pageNumber,
+			eraseAt(
+				this.store.getPage(pageNumber),
+				point,
+				this.eraserRadius(pageNumber),
+			),
+		);
 	}
 
 	private eraserRadius(pageNumber: number): number {
-		return Math.max(this.inkWidth(pageNumber) * ERASER_RADIUS_FACTOR, MIN_ERASER_RADIUS);
+		return Math.max(
+			this.inkWidth(pageNumber) * ERASER_RADIUS_FACTOR,
+			MIN_ERASER_RADIUS,
+		);
 	}
 
-	private restyleSelection(patch: Partial<Pick<Annotation, 'color' | 'width'>>): void {
+	private restyleSelection(
+		patch: Partial<Pick<Annotation, 'color' | 'width'>>,
+	): void {
 		const { pageNumber, ids } = this.selection;
 		const before = this.store.getPage(pageNumber);
 		this.store.setPageLive(
@@ -1548,7 +1894,8 @@ export class AnnotationController {
 	}
 
 	private redrawAllOverlay(): void {
-		for (const pageNumber of this.pages.keys()) this.redrawOverlay(pageNumber);
+		for (const pageNumber of this.pages.keys())
+			this.redrawOverlay(pageNumber);
 	}
 
 	private redrawBase(pageNumber: number): void {
@@ -1560,7 +1907,11 @@ export class AnnotationController {
 		// The layer is created on the first highlight and kept from then on —
 		// erasing the last one has to repaint it empty, not leave the last
 		// highlight sitting there because there is now nothing to draw.
-		const context = mount.highlight ?? (annotations.some(isHighlight) ? this.createHighlightLayer(mount) : null);
+		const context =
+			mount.highlight ??
+			(annotations.some(isHighlight)
+				? this.createHighlightLayer(mount)
+				: null);
 		if (context) renderHighlights(context, annotations);
 	}
 
@@ -1568,7 +1919,9 @@ export class AnnotationController {
 	// `insertBefore` rather than an append: both other canvases already exist
 	// by the time anything is highlighted, and a highlight painted over the
 	// ink would cover the pen strokes it is supposed to sit behind.
-	private createHighlightLayer(mount: PageMount): CanvasRenderingContext2D | null {
+	private createHighlightLayer(
+		mount: PageMount,
+	): CanvasRenderingContext2D | null {
 		const canvas = mount.content.createEl('canvas', {
 			cls: 'inkling-annotation-layer inkling-annotation-highlight',
 		});
@@ -1579,7 +1932,9 @@ export class AnnotationController {
 		// also the annotation's /CA and the threshold it is read back by has
 		// no fourth copy to fall out of step. The stylesheet consumes it as
 		// var(--inkling-highlight-opacity).
-		canvas.setCssProps({ '--inkling-highlight-opacity': String(HIGHLIGHTER_OPACITY) });
+		canvas.setCssProps({
+			'--inkling-highlight-opacity': String(HIGHLIGHTER_OPACITY),
+		});
 		mount.content.insertBefore(canvas, mount.base.canvas);
 
 		const context = canvas.getContext('2d');
@@ -1598,7 +1953,8 @@ export class AnnotationController {
 		const mount = this.pages.get(pageNumber);
 		if (!mount) return;
 
-		const dragMode = this.drag?.pageNumber === pageNumber ? this.drag.mode : null;
+		const dragMode =
+			this.drag?.pageNumber === pageNumber ? this.drag.mode : null;
 		const lassoPath = dragMode?.kind === 'lasso' ? dragMode.points : null;
 		const draft = this.draftFor(pageNumber, dragMode);
 		// A highlighter's draft is not drawn here. It goes to the multiplied
@@ -1609,21 +1965,38 @@ export class AnnotationController {
 		const overlayDraft = highlightDraft ? null : draft;
 
 		const eraserCursor =
-			this.eraserCursor?.pageNumber === pageNumber ? { point: this.eraserCursor.point, radius: this.eraserRadius(pageNumber) } : null;
+			this.eraserCursor?.pageNumber === pageNumber
+				? {
+						point: this.eraserCursor.point,
+						radius: this.eraserRadius(pageNumber),
+					}
+				: null;
 		const selected =
-			this.selection.pageNumber === pageNumber && this.selection.ids.size > 0
-				? this.store.getPage(pageNumber).filter((a) => this.selection.ids.has(a.id))
+			this.selection.pageNumber === pageNumber &&
+			this.selection.ids.size > 0
+				? this.store
+						.getPage(pageNumber)
+						.filter((a) => this.selection.ids.has(a.id))
 				: undefined;
 
 		// Nothing to draw and nothing ever drawn: leave the overlay
 		// unallocated. This is the whole point of deferring it — a page being
 		// read rather than drawn on reaches here on every mount and would
 		// otherwise pay for a full-size canvas to clear it and stop.
-		const empty = !overlayDraft && !lassoPath && !eraserCursor && (!selected || selected.length === 0);
+		const empty =
+			!overlayDraft &&
+			!lassoPath &&
+			!eraserCursor &&
+			(!selected || selected.length === 0);
 		if (empty && !mount.overlay) return;
 
 		const overlay = this.overlayContext(mount);
-		renderOverlay(overlay, { selected, draft: overlayDraft, lassoPath, eraserCursor });
+		renderOverlay(overlay, {
+			selected,
+			draft: overlayDraft,
+			lassoPath,
+			eraserCursor,
+		});
 	}
 
 	// Paints the highlight layer with the live highlighter stroke on it, or
@@ -1633,7 +2006,11 @@ export class AnnotationController {
 	// highlight on a page has to be visible while it is being drawn, not
 	// only from the moment it commits — and until this, the first stroke had
 	// no layer to be drawn on at all.
-	private redrawHighlightDraft(mount: PageMount, pageNumber: number, draft: Annotation | null): void {
+	private redrawHighlightDraft(
+		mount: PageMount,
+		pageNumber: number,
+		draft: Annotation | null,
+	): void {
 		// Nothing to draw, and nothing was drawn last time: the layer is
 		// already correct, and this is the path every pointermove of every
 		// other tool takes.
@@ -1641,7 +2018,8 @@ export class AnnotationController {
 		mount.highlightDraft = draft !== null;
 
 		const context = mount.highlight ?? this.createHighlightLayer(mount);
-		if (context) renderHighlights(context, this.store.getPage(pageNumber), draft);
+		if (context)
+			renderHighlights(context, this.store.getPage(pageNumber), draft);
 	}
 
 	// The overlay's drawing context, acquired the first time something
@@ -1650,12 +2028,18 @@ export class AnnotationController {
 		if (mount.overlay) return mount.overlay;
 
 		const overlay = mount.overlayCanvas.getContext('2d');
-		if (!overlay) throw new Error('Inkling: could not acquire a 2D context for the annotation layer.');
+		if (!overlay)
+			throw new Error(
+				'Inkling: could not acquire a 2D context for the annotation layer.',
+			);
 		mount.overlay = overlay;
 		return overlay;
 	}
 
-	private draftFor(pageNumber: number, mode: DragMode | null): Annotation | null {
+	private draftFor(
+		pageNumber: number,
+		mode: DragMode | null,
+	): Annotation | null {
 		if (!mode) return null;
 		if (mode.kind === 'draw') {
 			return {

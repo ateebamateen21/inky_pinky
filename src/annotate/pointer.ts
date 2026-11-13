@@ -1,5 +1,6 @@
 import { Point } from './types';
 import { MIN_VIEW_ZOOM, stepLadder } from './zoomLadder';
+import { TAP_MAX_TRAVEL } from './tape';
 
 export interface GestureHandlers {
 	onStart(point: Point, event: PointerEvent): void;
@@ -148,7 +149,13 @@ function clamp(value: number, min: number, max: number): number {
 // However far zoomed content is panned, its edges can never be dragged
 // past the viewport's own edges — otherwise panning could leave blank
 // space showing on one side with no way back except zooming out again.
-function clampTranslate(x: number, y: number, scale: number, width: number, height: number): Point {
+function clampTranslate(
+	x: number,
+	y: number,
+	scale: number,
+	width: number,
+	height: number,
+): Point {
 	return {
 		x: clamp(x, width * (1 - scale), 0),
 		y: clamp(y, height * (1 - scale), 0),
@@ -166,8 +173,12 @@ export function findScrollParent(el: HTMLElement): HTMLElement | null {
 		const style = getComputedStyle(node);
 		// Either way counts: a grid wider than the pane can scroll sideways
 		// without being any taller than it.
-		const scrollsDown = (style.overflowY === 'auto' || style.overflowY === 'scroll') && node.scrollHeight > node.clientHeight;
-		const scrollsAcross = (style.overflowX === 'auto' || style.overflowX === 'scroll') && node.scrollWidth > node.clientWidth;
+		const scrollsDown =
+			(style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+			node.scrollHeight > node.clientHeight;
+		const scrollsAcross =
+			(style.overflowX === 'auto' || style.overflowX === 'scroll') &&
+			node.scrollWidth > node.clientWidth;
 		if (scrollsDown || scrollsAcross) return node;
 		node = node.parentElement;
 	}
@@ -208,7 +219,11 @@ function stopMomentum(): void {
 
 // `velocity` is vertical and `velocityX` sideways, both in px/ms. The glide
 // keeps the direction of the flick, so a diagonal one glides diagonally.
-function startMomentum(scrollParent: HTMLElement, velocity: number, velocityX = 0): void {
+function startMomentum(
+	scrollParent: HTMLElement,
+	velocity: number,
+	velocityX = 0,
+): void {
 	stopMomentum();
 	if (Math.hypot(velocity, velocityX) < MOMENTUM_START_VELOCITY) return;
 
@@ -228,7 +243,11 @@ function startMomentum(scrollParent: HTMLElement, velocity: number, velocityX = 
 		scrollParent.scrollTop = before - current * elapsed;
 		scrollParent.scrollLeft = beforeX - currentX * elapsed;
 		// Hit an edge in both directions — nothing left to glide through.
-		if (scrollParent.scrollTop === before && scrollParent.scrollLeft === beforeX) return;
+		if (
+			scrollParent.scrollTop === before &&
+			scrollParent.scrollLeft === beforeX
+		)
+			return;
 
 		const decay = Math.pow(MOMENTUM_FRICTION, elapsed / 16);
 		current *= decay;
@@ -246,7 +265,12 @@ function startMomentum(scrollParent: HTMLElement, velocity: number, velocityX = 
 // zooming behaves identically however it was asked for. Returns the scale
 // actually applied, which is the requested one clamped to the allowed
 // range.
-export function zoomAbout(content: HTMLElement, placeholder: HTMLElement, targetScale: number, screen: Point): number {
+export function zoomAbout(
+	content: HTMLElement,
+	placeholder: HTMLElement,
+	targetScale: number,
+	screen: Point,
+): number {
 	const rect = placeholder.getBoundingClientRect();
 	const zoom = getZoom(content);
 	// The content-space point currently under `screen`, solved from the
@@ -276,13 +300,22 @@ export function currentZoom(content: HTMLElement): number {
 // resizes the box, the offset has to scale with it, or the page would jump
 // and could end up showing blank space past its edge. A page that is not
 // magnified has no offset to fix, so most pages cost nothing here.
-export function rescaleZoomTranslate(content: HTMLElement, ratio: number): void {
+export function rescaleZoomTranslate(
+	content: HTMLElement,
+	ratio: number,
+): void {
 	const zoom = getZoom(content);
 	if (zoom.scale <= MIN_ZOOM) return;
 	const placeholder = content.parentElement;
 	if (!placeholder) return;
 	const rect = placeholder.getBoundingClientRect();
-	const translate = clampTranslate(zoom.x * ratio, zoom.y * ratio, zoom.scale, rect.width, rect.height);
+	const translate = clampTranslate(
+		zoom.x * ratio,
+		zoom.y * ratio,
+		zoom.scale,
+		rect.width,
+		rect.height,
+	);
 	applyZoom(content, { scale: zoom.scale, x: translate.x, y: translate.y });
 }
 
@@ -308,13 +341,17 @@ const WHEEL_SETTLE_MS = 200;
 // and touch panning is implemented by hand below instead of leaned on the
 // browser for — full, deterministic control instead of depending on
 // cross-device native-gesture-recognition timing.
-export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => GestureHandlers | null): () => void {
+export function attachPointerGestures(
+	el: HTMLCanvasElement,
+	getHandlers: () => GestureHandlers | null,
+): () => void {
 	let activePointerId: number | null = null;
 	let sideMask = 0;
 	let penTouching = false;
 
 	const syncButtons = (event: PointerEvent) => {
-		const mask = event.pointerType === 'pen' ? event.buttons & SIDE_BUTTON_BITS : 0;
+		const mask =
+			event.pointerType === 'pen' ? event.buttons & SIDE_BUTTON_BITS : 0;
 		if (mask === sideMask) return;
 		sideMask = mask;
 		getHandlers()?.onButtons?.(mask);
@@ -323,7 +360,8 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 	// A pen is touching when it is pressed and something is down. Pressure 0
 	// with a button down is a side button pressed in the air, which looks like
 	// contact to anything that only reads `buttons`.
-	const isPenContact = (event: PointerEvent) => event.pressure > 0 && event.buttons !== 0;
+	const isPenContact = (event: PointerEvent) =>
+		event.pressure > 0 && event.buttons !== 0;
 	let touchPan: {
 		pointerId: number;
 		startX: number;
@@ -338,6 +376,12 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		velocity: number;
 		velocityX: number;
 	} | null = null;
+
+	let pendingTap: {
+		pointerId: number;
+		start: Point; // screen coordinates
+		startTime: number;
+	} | null = null;
 	// Every currently-down touch's latest screen position — tracked
 	// independently of touchPan/pinch so a second touch joining mid-gesture
 	// always has both points available to compute a starting pinch distance
@@ -349,7 +393,13 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 	// where each came down; `last` is where the hold was when last seen (the
 	// one finger, or the midpoint of two), which is what is reported once a
 	// finger has lifted and is no longer there to ask.
-	let hold: { ids: number[]; origins: Point[]; last: Point; timer: number | null; active: boolean } | null = null;
+	let hold: {
+		ids: number[];
+		origins: Point[];
+		last: Point;
+		timer: number | null;
+		active: boolean;
+	} | null = null;
 	let pinch: {
 		ids: [number, number];
 		startDistance: number;
@@ -385,20 +435,29 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		const rect = el.getBoundingClientRect();
 		const scaleX = rect.width === 0 ? 1 : el.width / rect.width;
 		const scaleY = rect.height === 0 ? 1 : el.height / rect.height;
-		const point: Point = { x: (event.clientX - rect.left) * scaleX, y: (event.clientY - rect.top) * scaleY };
+		const point: Point = {
+			x: (event.clientX - rect.left) * scaleX,
+			y: (event.clientY - rect.top) * scaleY,
+		};
 		// Pen only. A mouse reports a constant 0.5 for as long as a button is
 		// held, so honouring it would render every desktop stroke as a
 		// uniform ribbon at half weight — worse than having no pressure at
 		// all. A pressure of exactly 0 is a hover sample, not a feather-light
 		// touch, and would draw a stroke that pinches to nothing.
-		if (event.pointerType === 'pen' && Number.isFinite(event.pressure) && event.pressure > 0) {
+		if (
+			event.pointerType === 'pen' &&
+			Number.isFinite(event.pressure) &&
+			event.pressure > 0
+		) {
 			point.p = Math.min(event.pressure, 1);
 		}
 		return point;
 	};
 
 	const isImplausiblePenContact = (event: PointerEvent): boolean =>
-		event.pointerType === 'pen' && (event.width > MAX_PLAUSIBLE_PEN_CONTACT_PX || event.height > MAX_PLAUSIBLE_PEN_CONTACT_PX);
+		event.pointerType === 'pen' &&
+		(event.width > MAX_PLAUSIBLE_PEN_CONTACT_PX ||
+			event.height > MAX_PLAUSIBLE_PEN_CONTACT_PX);
 
 	const startTouchPan = (event: PointerEvent): void => {
 		// Only one pointer drives panning at a time — a second one (e.g. an
@@ -444,7 +503,11 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		current.ids.some((id, index) => {
 			const now = touches.get(id);
 			const origin = current.origins[index];
-			return now !== undefined && origin !== undefined && distance(now, origin) > HOLD_TOLERANCE_PX;
+			return (
+				now !== undefined &&
+				origin !== undefined &&
+				distance(now, origin) > HOLD_TOLERANCE_PX
+			);
 		});
 
 	const stopWatchingHold = (): void => {
@@ -475,6 +538,7 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		current.active = true;
 		touchPan = null;
 		pinch = null;
+		pendingTap = null;
 		stopMomentum();
 		for (const id of current.ids) capturePointer(el, id);
 		current.last = holdPoint(current.ids) ?? current.last;
@@ -482,6 +546,7 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 	};
 
 	const startPinch = (): void => {
+		pendingTap = null;
 		if (touchPan) {
 			try {
 				el.releasePointerCapture(touchPan.pointerId);
@@ -527,7 +592,10 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 			startScale: zoom.scale,
 			startView: getHandlers()?.getViewZoom?.() ?? 1,
 			anchor,
-			hold: { x: (mid.x - rect.left) / width, y: (mid.y - rect.top) / height },
+			hold: {
+				x: (mid.x - rect.left) / width,
+				y: (mid.y - rect.top) / height,
+			},
 			lastMidX: mid.x,
 			lastMidY: mid.y,
 			scrollParent: findScrollParent(el),
@@ -545,7 +613,10 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		stopMomentum();
 
 		if (event.pointerType === 'touch') {
-			touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+			touches.set(event.pointerId, {
+				x: event.clientX,
+				y: event.clientY,
+			});
 			// A hold in progress has claimed the touch: another finger joining
 			// it starts nothing, not even a pinch.
 			if (hold?.active) {
@@ -560,7 +631,15 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 				capturePointer(el, event.pointerId);
 				event.preventDefault();
 			} else if (touches.size === 1) {
-				startTouchPan(event);
+				// startTouchPan(event);
+				pendingTap = {
+					pointerId: event.pointerId,
+					start: { x: event.clientX, y: event.clientY },
+					startTime: event.timeStamp,
+				};
+				capturePointer(el, event.pointerId);
+				event.preventDefault();
+				// Deliberately no startTouchPan and no onStart yet — see onPointerMove
 			}
 			if (!hold) watchForHold();
 			return;
@@ -572,7 +651,11 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 			// pointerdown with no contact: pressure 0 and no contact bit. It
 			// is a button, not the start of a stroke, and treating it as one
 			// drew a dot (or a line, if the pen moved) in mid-air.
-			if (event.pressure === 0 && (event.buttons & 1) === 0 && event.buttons !== 0) {
+			if (
+				event.pressure === 0 &&
+				(event.buttons & 1) === 0 &&
+				event.buttons !== 0
+			) {
 				penTouching = false;
 				event.preventDefault();
 				return;
@@ -595,7 +678,10 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 
 	const onPointerMove = (event: PointerEvent) => {
 		if (event.pointerType === 'touch' && touches.has(event.pointerId)) {
-			touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+			touches.set(event.pointerId, {
+				x: event.clientX,
+				y: event.clientY,
+			});
 		}
 
 		if (event.pointerType === 'touch' && hold) {
@@ -625,18 +711,31 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 				const handlers = getHandlers();
 				const mid = midpoint(p1, p2);
 				const canZoomView = handlers?.setViewZoom !== undefined;
-				const next = stepLadder(pinch.startView, pinch.startScale, distance(p1, p2) / pinch.startDistance, {
-					minView: canZoomView ? MIN_VIEW_ZOOM : 1,
-					maxPage: MAX_ZOOM,
-					freezeView: handlers?.isViewZoomLocked?.() ?? false,
-					freezePage: handlers?.isPageZoomLocked?.() ?? false,
-				});
+				const next = stepLadder(
+					pinch.startView,
+					pinch.startScale,
+					distance(p1, p2) / pinch.startDistance,
+					{
+						minView: canZoomView ? MIN_VIEW_ZOOM : 1,
+						maxPage: MAX_ZOOM,
+						freezeView: handlers?.isViewZoomLocked?.() ?? false,
+						freezePage: handlers?.isPageZoomLocked?.() ?? false,
+					},
+				);
 
 				// The view rung first: resizing the pages changes the box the
 				// page rung is measured against, so it has to land before it.
 				let viewMoved = false;
-				if (handlers?.setViewZoom && next.view !== (handlers.getViewZoom?.() ?? 1)) {
-					handlers.setViewZoom(next.view, { placeholder: pinch.placeholder, fx: pinch.hold.x, fy: pinch.hold.y, screen: mid });
+				if (
+					handlers?.setViewZoom &&
+					next.view !== (handlers.getViewZoom?.() ?? 1)
+				) {
+					handlers.setViewZoom(next.view, {
+						placeholder: pinch.placeholder,
+						fx: pinch.hold.x,
+						fy: pinch.hold.y,
+						screen: mid,
+					});
 					viewMoved = true;
 				}
 
@@ -648,7 +747,11 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 					rect.width,
 					rect.height,
 				);
-				applyZoom(pinch.content, { scale: next.page, x: translate.x, y: translate.y });
+				applyZoom(pinch.content, {
+					scale: next.page,
+					x: translate.x,
+					y: translate.y,
+				});
 
 				// Two fingers dragged without a page magnified have nothing to
 				// pan inside the page, so the drag scrolls the list instead.
@@ -665,11 +768,34 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 			return;
 		}
 
+		// A single finger that hasn't moved far enough to be a pan yet. If it
+		// does move past the threshold, it becomes a pan from this point on —
+		// startTouchPan sets the origin to this sample, so the ~6px of travel
+		// before promotion is not applied as scroll, which is what keeps a tap
+		// from nudging the page.
+		if (pendingTap && event.pointerId === pendingTap.pointerId) {
+			const travelled = Math.hypot(
+				event.clientX - pendingTap.start.x,
+				event.clientY - pendingTap.start.y,
+			);
+			if (travelled > TAP_MAX_TRAVEL) {
+				pendingTap = null;
+				startTouchPan(event);
+				// Fall through to the touchPan block below so this same move is
+				// applied to the pan instead of being dropped.
+			} else {
+				event.preventDefault();
+				return;
+			}
+		}
+
 		if (touchPan && event.pointerId === touchPan.pointerId) {
-			touchPan.scrollParent.scrollTop = touchPan.scrollTop - (event.clientY - touchPan.startY);
+			touchPan.scrollParent.scrollTop =
+				touchPan.scrollTop - (event.clientY - touchPan.startY);
 			// Sideways too, which only does anything where the view is wider
 			// than the pane (the 2D grid); in the plain column it stays put.
-			touchPan.scrollParent.scrollLeft = touchPan.scrollLeft - (event.clientX - touchPan.startX);
+			touchPan.scrollParent.scrollLeft =
+				touchPan.scrollLeft - (event.clientX - touchPan.startX);
 
 			// Tracked against the previous *sample*, not the gesture start, so
 			// this reflects how fast the finger is moving right now — which is
@@ -678,8 +804,12 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 			if (elapsed > 0) {
 				const sample = (event.clientY - touchPan.lastY) / elapsed;
 				const sampleX = (event.clientX - touchPan.lastX) / elapsed;
-				touchPan.velocity = touchPan.velocity * (1 - VELOCITY_SMOOTHING) + sample * VELOCITY_SMOOTHING;
-				touchPan.velocityX = touchPan.velocityX * (1 - VELOCITY_SMOOTHING) + sampleX * VELOCITY_SMOOTHING;
+				touchPan.velocity =
+					touchPan.velocity * (1 - VELOCITY_SMOOTHING) +
+					sample * VELOCITY_SMOOTHING;
+				touchPan.velocityX =
+					touchPan.velocityX * (1 - VELOCITY_SMOOTHING) +
+					sampleX * VELOCITY_SMOOTHING;
 				touchPan.lastX = event.clientX;
 				touchPan.lastY = event.clientY;
 				touchPan.lastTime = event.timeStamp;
@@ -698,7 +828,13 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 			// because the pointer was already down. So contact that begins on
 			// a move starts the stroke, but only while a button is held, so a
 			// stroke the plugin ended on purpose is not restarted mid-touch.
-			if (contact && !penTouching && activePointerId === null && sideMask !== 0 && !isImplausiblePenContact(event)) {
+			if (
+				contact &&
+				!penTouching &&
+				activePointerId === null &&
+				sideMask !== 0 &&
+				!isImplausiblePenContact(event)
+			) {
 				const starting = getHandlers();
 				if (starting) {
 					stopMomentum();
@@ -710,7 +846,12 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 
 			// The mirror image: lifting the pen while a button is still held
 			// fires no pointerup either, just a move with the contact gone.
-			if (activePointerId === event.pointerId && event.pressure === 0 && (event.buttons & 1) === 0 && event.buttons !== 0) {
+			if (
+				activePointerId === event.pointerId &&
+				event.pressure === 0 &&
+				(event.buttons & 1) === 0 &&
+				event.buttons !== 0
+			) {
 				penTouching = false;
 				activePointerId = null;
 				getHandlers()?.onEnd(toPoint(event), event);
@@ -719,7 +860,8 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 			}
 			penTouching = contact;
 		}
-		if (event.pointerType !== 'touch') getHandlers()?.onHover?.(toPoint(event));
+		if (event.pointerType !== 'touch')
+			getHandlers()?.onHover?.(toPoint(event));
 		if (event.pointerId !== activePointerId) return;
 		const handlers = getHandlers();
 		if (!handlers) return;
@@ -730,7 +872,10 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		// smoothing ever saw it, which is most of why fast strokes came out
 		// polygonal. Guarded because the method is absent on some WebViews,
 		// and returns an empty list on others.
-		const samples = typeof event.getCoalescedEvents === 'function' ? event.getCoalescedEvents() : [];
+		const samples =
+			typeof event.getCoalescedEvents === 'function'
+				? event.getCoalescedEvents()
+				: [];
 		if (samples.length === 0) {
 			handlers.onMove(toPoint(event), event);
 			return;
@@ -766,6 +911,18 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 			}
 		}
 
+		// A single finger lifted without ever becoming a pan: it was a tap.
+		if (pendingTap && event.pointerId === pendingTap.pointerId) {
+			pendingTap = null;
+			if (!cancelled) {
+				const handlers = getHandlers();
+				const point = toPoint(event);
+				handlers?.onStart(point, event);
+				handlers?.onEnd(toPoint(event), event);
+			}
+			return;
+		}
+
 		// Ends the whole pinch as soon as either finger lifts, rather than
 		// trying to seamlessly hand off to single-finger pan with the other —
 		// simpler, and a deliberate two-finger gesture ending with one finger
@@ -780,7 +937,12 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 		if (touchPan && event.pointerId === touchPan.pointerId) {
 			// A cancelled pan (the browser taking the gesture over, a palm
 			// landing) shouldn't fling the page — only a real lift does.
-			if (!cancelled) startMomentum(touchPan.scrollParent, touchPan.velocity, touchPan.velocityX);
+			if (!cancelled)
+				startMomentum(
+					touchPan.scrollParent,
+					touchPan.velocity,
+					touchPan.velocityX,
+				);
 			touchPan = null;
 			return;
 		}
@@ -857,7 +1019,8 @@ export function attachPointerGestures(el: HTMLCanvasElement, getHandlers: () => 
 	// second call finds nothing left to do.
 	const doc = el.ownerDocument;
 	const onDocumentTouchEnd = (event: PointerEvent) => {
-		if (event.pointerType !== 'touch' || !touches.has(event.pointerId)) return;
+		if (event.pointerType !== 'touch' || !touches.has(event.pointerId))
+			return;
 		endGesture(event, event.type === 'pointercancel');
 	};
 	doc.addEventListener('pointerup', onDocumentTouchEnd, true);
