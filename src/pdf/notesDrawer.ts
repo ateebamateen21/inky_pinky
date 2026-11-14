@@ -17,7 +17,13 @@ import { stickyNotesSignature, type StickyNoteEntry } from './stickyNotes';
 // edge-swipe zone, so an ordinary swipe in from the screen edge does
 // nothing here.
 //
-// This class draws and handles that gesture. It is told what to list (by
+// While it is open, a tap anywhere else in the view (not on the drawer, not
+// on the toolbar) closes it. A tap, not a press that moves: dragging or
+// scrolling the pages with the drawer open leaves it open, so the notes can
+// be kept in view while reading. The tap is not swallowed, so it still does
+// whatever it would have done on the page.
+//
+// This class draws and handles those gestures. It is told what to list (by
 // calling getEntries) and reports what the reader did (onPick, onOpenChange);
 // which notes exist, and what going to a page means, are the view's business.
 //
@@ -67,6 +73,11 @@ const MIN_HEIGHT_PX = 120;
 // slide the drawer a pixel and then fail to count as a tap.
 const DRAG_SLOP_PX = 6;
 
+// What still counts as a tap, for closing the drawer from outside: a press
+// that lifts within this distance and this time of where it came down.
+const TAP_SLOP_PX = 10;
+const TAP_MAX_MS = 500;
+
 interface Gesture {
 	pointerId: number;
 	startX: number;
@@ -91,10 +102,13 @@ export class NotesDrawer {
 	private signature: string | null = null;
 	private open = false;
 	private gesture: Gesture | null = null;
+	// A press outside the drawer that has not lifted yet, which becomes a
+	// close if it turns out to be a tap.
+	private outsideTap: { pointerId: number; x: number; y: number; time: number } | null = null;
 
 	// `parent` is the view's own element. The drawer is appended to the end of
 	// it, so build it right after the toolbar to have it sit straight under it.
-	constructor(parent: HTMLElement, private readonly options: NotesDrawerOptions) {
+	constructor(private readonly parent: HTMLElement, private readonly options: NotesDrawerOptions) {
 		this.anchor = parent.createDiv({ cls: 'inkling-notes-anchor' });
 		const clip = this.anchor.createDiv({ cls: 'inkling-notes-clip' });
 		this.slider = clip.createDiv({ cls: 'inkling-notes-slider' });
@@ -185,6 +199,7 @@ export class NotesDrawer {
 	}
 
 	destroy(): void {
+		this.stopWatchingOutside();
 		this.anchor.remove();
 	}
 
@@ -202,7 +217,59 @@ export class NotesDrawer {
 		setTooltip(this.handle, label);
 		this.handle.setAttribute('aria-label', label);
 		this.handle.setAttribute('aria-expanded', String(open));
+		if (open) this.startWatchingOutside();
+		else this.stopWatchingOutside();
 	}
+
+	// Listening only while open, so a closed drawer costs the view nothing.
+	// On the capture phase, so a page that handles its own presses (the ink
+	// canvases do) cannot hide them from here.
+	private startWatchingOutside(): void {
+		this.parent.addEventListener('pointerdown', this.onOutsideDown, true);
+		this.parent.addEventListener('pointerup', this.onOutsideUp, true);
+		this.parent.addEventListener('pointercancel', this.onOutsideCancel, true);
+	}
+
+	private stopWatchingOutside(): void {
+		this.outsideTap = null;
+		this.parent.removeEventListener('pointerdown', this.onOutsideDown, true);
+		this.parent.removeEventListener('pointerup', this.onOutsideUp, true);
+		this.parent.removeEventListener('pointercancel', this.onOutsideCancel, true);
+	}
+
+	// Whether a press landed somewhere that should leave the drawer alone: on
+	// the drawer or its handle, or on the toolbar. The toolbar is left out
+	// because its own button toggles the drawer: a tap there that closed it
+	// first would be followed by the button opening it again.
+	private isInsideOrToolbar(target: EventTarget | null): boolean {
+		if (!(target instanceof Element)) return false;
+		return this.anchor.contains(target) || target.closest('.inkling-toolbar') !== null;
+	}
+
+	private readonly onOutsideDown = (event: PointerEvent): void => {
+		// A second finger arriving is a pinch beginning, not a tap.
+		if (this.outsideTap) {
+			this.outsideTap = null;
+			return;
+		}
+		// Right and middle clicks are not what is meant by "click outside".
+		if (event.button > 0 || this.isInsideOrToolbar(event.target)) return;
+		this.outsideTap = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, time: event.timeStamp };
+	};
+
+	private readonly onOutsideUp = (event: PointerEvent): void => {
+		const tap = this.outsideTap;
+		if (!tap || event.pointerId !== tap.pointerId) return;
+		this.outsideTap = null;
+		const moved = Math.hypot(event.clientX - tap.x, event.clientY - tap.y) > TAP_SLOP_PX;
+		if (moved || event.timeStamp - tap.time > TAP_MAX_MS) return;
+		this.finish(false);
+	};
+
+	// The browser took the press away, usually because it became a scroll.
+	private readonly onOutsideCancel = (): void => {
+		this.outsideTap = null;
+	};
 
 	// The reader's press on the handle has ended with a decision.
 	private finish(open: boolean): void {

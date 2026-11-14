@@ -28,13 +28,21 @@ function mount(list: readonly StickyNoteEntry[] = entries) {
 	Object.defineProperty(slider, 'offsetWidth', { value: DRAWER_WIDTH });
 	const handle = parent.querySelector<HTMLButtonElement>('.inkling-notes-handle')!;
 	const cards = () => Array.from(parent.querySelectorAll<HTMLButtonElement>('.inkling-notes-card'));
+	// The rest of the view the drawer sits in: a page, and the toolbar.
+	const page = parent.appendChild(document.createElement('div'));
+	const toolbar = parent.appendChild(document.createElement('div'));
+	toolbar.className = 'inkling-toolbar';
+	const pressOn = (target: Element, type: string, x: number, init: { pointerId?: number; timeStamp?: number; button?: number } = {}) => {
+		const { button = 0, ...rest } = init;
+		target.dispatchEvent(Object.assign(makePointerEvent(type, { clientX: x, clientY: 0, ...rest }), { button }));
+	};
 	// A real pointer event reports which button it was; the harness's fake
 	// does not, and a press from the primary button is what starts a drag.
 	const fire = (type: string, x: number, pointerId = 1) => {
 		const event = Object.assign(makePointerEvent(type, { clientX: x, clientY: 0, pointerId }), { button: 0 });
 		handle.dispatchEvent(event);
 	};
-	return { parent, drawer, getEntries, onPick, onOpenChange, slider, handle, cards, fire };
+	return { parent, drawer, getEntries, onPick, onOpenChange, slider, handle, cards, fire, page, toolbar, pressOn };
 }
 
 beforeEach(() => {
@@ -278,6 +286,115 @@ describe('the handle', () => {
 		fire('pointerup', 500);
 		handle.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
 		expect(drawer.isOpen()).toBe(true);
+	});
+});
+
+describe('tapping outside the drawer', () => {
+	function tap(target: Element, pressOn: ReturnType<typeof mount>['pressOn'], x = 100) {
+		pressOn(target, 'pointerdown', x);
+		pressOn(target, 'pointerup', x);
+	}
+
+	it('closes an open drawer when the page is tapped', () => {
+		const { drawer, page, pressOn, onOpenChange } = mount();
+		drawer.setOpen(true);
+		tap(page, pressOn);
+		expect(drawer.isOpen()).toBe(false);
+		expect(onOpenChange).toHaveBeenCalledWith(false);
+	});
+
+	it('does nothing to a drawer that is already closed', () => {
+		const { page, pressOn, onOpenChange } = mount();
+		tap(page, pressOn);
+		expect(onOpenChange).not.toHaveBeenCalled();
+	});
+
+	it('stays open while the pages are dragged or scrolled', () => {
+		const { drawer, page, pressOn } = mount();
+		drawer.setOpen(true);
+		pressOn(page, 'pointerdown', 100);
+		pressOn(page, 'pointermove', 140);
+		pressOn(page, 'pointerup', 140);
+		expect(drawer.isOpen()).toBe(true);
+	});
+
+	it('stays open for a press that is held down rather than tapped', () => {
+		const { drawer, page, pressOn } = mount();
+		drawer.setOpen(true);
+		pressOn(page, 'pointerdown', 100, { timeStamp: 1000 });
+		pressOn(page, 'pointerup', 100, { timeStamp: 2000 });
+		expect(drawer.isOpen()).toBe(true);
+	});
+
+	it('stays open when the toolbar is tapped, so its own button can toggle it', () => {
+		const { drawer, toolbar, pressOn } = mount();
+		drawer.setOpen(true);
+		tap(toolbar, pressOn);
+		expect(drawer.isOpen()).toBe(true);
+	});
+
+	it('stays open when the drawer itself is tapped', () => {
+		const { drawer, parent, pressOn } = mount();
+		drawer.setOpen(true);
+		tap(parent.querySelector('.inkling-notes-list')!, pressOn);
+		expect(drawer.isOpen()).toBe(true);
+	});
+
+	it('stays open when a second finger joins, which is a pinch and not a tap', () => {
+		const { drawer, page, pressOn } = mount();
+		drawer.setOpen(true);
+		pressOn(page, 'pointerdown', 100, { pointerId: 1 });
+		pressOn(page, 'pointerdown', 200, { pointerId: 2 });
+		pressOn(page, 'pointerup', 100, { pointerId: 1 });
+		pressOn(page, 'pointerup', 200, { pointerId: 2 });
+		expect(drawer.isOpen()).toBe(true);
+	});
+
+	it('stays open when the browser takes the press away', () => {
+		const { drawer, page, pressOn } = mount();
+		drawer.setOpen(true);
+		pressOn(page, 'pointerdown', 100);
+		pressOn(page, 'pointercancel', 100);
+		pressOn(page, 'pointerup', 100);
+		expect(drawer.isOpen()).toBe(true);
+	});
+
+	it('is not closed by a right click', () => {
+		const { drawer, page, pressOn } = mount();
+		drawer.setOpen(true);
+		pressOn(page, 'pointerdown', 100, { button: 2 });
+		pressOn(page, 'pointerup', 100, { button: 2 });
+		expect(drawer.isOpen()).toBe(true);
+	});
+
+	it('does not swallow the tap, so it still does what it would have done', () => {
+		const { drawer, page, pressOn } = mount();
+		drawer.setOpen(true);
+		const seen: string[] = [];
+		page.addEventListener('pointerdown', () => seen.push('down'));
+		page.addEventListener('pointerup', () => seen.push('up'));
+		tap(page, pressOn);
+		expect(seen).toEqual(['down', 'up']);
+	});
+
+	it('stops listening once closed, and once destroyed', () => {
+		const { drawer, page, pressOn, onOpenChange } = mount();
+		drawer.setOpen(true);
+		drawer.setOpen(false);
+		tap(page, pressOn);
+		drawer.setOpen(true);
+		drawer.destroy();
+		tap(page, pressOn);
+		expect(onOpenChange).not.toHaveBeenCalled();
+	});
+
+	it('works again after the drawer is reopened', () => {
+		const { drawer, page, pressOn } = mount();
+		drawer.setOpen(true);
+		tap(page, pressOn);
+		drawer.setOpen(true);
+		tap(page, pressOn);
+		expect(drawer.isOpen()).toBe(false);
 	});
 });
 
