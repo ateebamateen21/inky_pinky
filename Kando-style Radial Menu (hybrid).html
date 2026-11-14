@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kando-style Radial Menu (hybrid)</title>
+<style>
+:root{--bg:#1e1e1e;--item:#2a2a2a;--line:rgba(255,255,255,.15);--hover:#3a3a3a;--text:#ececec;--dim:#8a8a8a;--accent:#46c5df;--arm:rgba(255,255,255,.3);--cur:#1a1a1a;color-scheme:dark}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){--bg:#f1f1f1;--item:#fff;--line:rgba(0,0,0,.2);--hover:#e4e4e4;--text:#222;--dim:#777;--accent:#0a8fa8;--arm:rgba(0,0,0,.3);--cur:#e9e9e9;color-scheme:light}}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;touch-action:none;user-select:none;-webkit-user-select:none}
+#panel{position:fixed;top:calc(12px + env(safe-area-inset-top,0px));left:12px;z-index:10;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.tog{padding:10px 16px;border-radius:999px;border:2px solid var(--line);background:var(--item);color:var(--dim);font-family:inherit;font-weight:600;font-size:15px;cursor:pointer}
+.tog.on{border-color:var(--accent);color:var(--text);box-shadow:0 0 12px rgba(70,197,223,.25)}
+.tog.nope{animation:nope .3s}
+@keyframes nope{25%{transform:translateX(-5px)}75%{transform:translateX(5px)}}
+#note{font-size:13px;color:var(--dim)}
+#stage{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;text-align:center;color:var(--dim);font-size:20px;line-height:1.5;pointer-events:none;padding:0 24px}
+#status{font-size:18px;color:var(--accent);min-height:1.5em}
+#overlay{position:fixed;inset:0;z-index:9999;display:none;pointer-events:none}
+#arms{position:absolute;inset:0;width:100%;height:100%}
+.arm{stroke:var(--arm);stroke-width:6;stroke-linecap:round}
+.live{fill:none;stroke:var(--accent);stroke-width:4;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:6 6}
+.bend{fill:#f5a524}
+#corner{position:absolute;width:18px;height:18px;box-sizing:border-box;border-radius:50%;border:3px solid #f5a524;transform:translate(-50%,-50%);z-index:4;display:none}
+#readout{position:fixed;bottom:calc(16px + env(safe-area-inset-bottom,0px));left:0;right:0;text-align:center;z-index:10000;font-size:15px;color:var(--accent);pointer-events:none;padding:0 12px}
+.dot{position:absolute;width:12px;height:12px;border-radius:50%;background:var(--text);opacity:.35;transform:translate(-50%,-50%)}
+#cursor{position:absolute;width:10px;height:10px;border-radius:50%;background:var(--accent);transform:translate(-50%,-50%);z-index:4;box-shadow:0 0 10px var(--accent)}
+.node{position:absolute;width:64px;height:64px;border-radius:50%;background:var(--item);border:2px solid var(--line);color:var(--text);transform:translate(-50%,-50%) scale(.8);display:flex;align-items:center;justify-content:center;opacity:0;transition:transform .15s,opacity .15s;z-index:2;box-shadow:0 4px 12px rgba(0,0,0,.3)}
+.node.show{opacity:1;transform:translate(-50%,-50%) scale(1)}
+.node.anc{width:50px;height:50px;opacity:.55}
+.node.cur{background:var(--cur);border-color:var(--accent);transform:translate(-50%,-50%) scale(1.1);opacity:1;z-index:3}
+.node.hot{background:var(--hover);border-color:var(--accent);opacity:1;transform:translate(-50%,-50%) scale(1.15);box-shadow:0 0 25px rgba(70,197,223,.3)}
+.node svg{width:28px;height:28px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.anc svg{width:22px;height:22px}
+.node.ctr{width:44px;height:44px}
+.ctr svg{width:20px;height:20px}
+.sw{width:36px;height:36px;border-radius:50%;border:2px solid var(--line)}
+.lbl{font-size:18px;font-weight:600}
+</style>
+</head>
+<body>
+<div id="panel">
+  <button type="button" class="tog on" id="t-turn">Sharp turn</button>
+  <button type="button" class="tog on" id="t-pause">Pause</button>
+  <span id="note">at least one stays on (hold-drag gestures only)</span>
+</div>
+<div id="stage">
+  <div>Press the side button (or Space, or right-click) to open.<br>Release quickly and it stays open: tap an icon to open a submenu, tap a tool to select,<br>tap the centre circle to go back (or close), tap empty space to close.<br>Or keep holding and drag: turn sharply or pause to open a submenu, release on a tool.</div>
+  <div id="status"></div>
+</div>
+<div id="overlay"><svg id="arms"></svg><div id="cursor"></div><div id="corner"></div></div>
+<div id="readout"></div>
+
+<script>
+// ---- Tunables ----
+const R = 130;            // ring radius (px)
+const DEAD = 45;          // centre dead zone: nothing hovered inside it
+const CFG = {
+  PAUSE_MS: 350,          // stand still this long to trigger (pause mode)
+  JITTER: 5,              // pen wobble under this does not reset the pause timer
+  PAUSE_MIN: 100,         // pause only counts this far from the active centre
+  MIN_STROKE: 100,        // stroke length needed before a turn counts
+  LOOKBACK: 28,           // px of recent movement used to measure a turn
+  MIN_TURN: 60,           // degrees of direction change that counts as a turn
+  PARENT_MIN: 100,        // min distance between a submenu centre and its parent
+  SIMPLIFY: 14,           // drawn path ignores wobble smaller than this (px); only real bends show
+  TAP_MOVE: 30            // press-and-release moving less than this = tap mode (menu stays open)
+};
+
+const BACK = '<path d="M9 14 4 9l5-5"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/>';
+const CLOSE = '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>';
+const DOC = '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>';
+const ICONS = {
+  select: '<path d="M7 22a5 5 0 0 1-2-4"/><path d="M3.3 14A6.8 6.8 0 0 1 2 10c0-4.4 4.5-8 10-8s10 3.6 10 8-4.5 8-10 8a12 12 0 0 1-5-1"/><path d="M5 18a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/>',
+  pen: '<path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
+  highlighter: '<path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/>',
+  eraser: '<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
+  shapes: '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><path d="M3 9h18M9 21V9"/>',
+  note: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  tape: '<path d="M15.5 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z"/><path d="M15 3v6h6"/>',
+  pages: DOC + '<polyline points="14 2 14 8 20 8"/>'
+};
+const ROOT = [
+  { id: 'select', icon: ICONS.select },
+  { id: 'pen', icon: ICONS.pen, submenu: 'pen' },
+  { id: 'highlighter', icon: ICONS.highlighter, submenu: 'hl' },
+  { id: 'eraser', icon: ICONS.eraser, submenu: 'eraser' },
+  { id: 'shapes', icon: ICONS.shapes, submenu: 'shapes' },
+  { id: 'note', icon: ICONS.note },
+  { id: 'tape', icon: ICONS.tape },
+  { id: 'pages', icon: ICONS.pages, submenu: 'pages' }
+];
+const SUB = {
+  pen: [{id:'black',color:'#111'},{id:'red',color:'#ef4444'},{id:'blue',color:'#3b82f6'},{id:'green',color:'#22c55e'},{id:'yellow',color:'#facc15'}],
+  hl: [{id:'yellow',color:'rgba(250,204,21,.5)'},{id:'pink',color:'rgba(244,114,182,.5)'},{id:'cyan',color:'rgba(34,211,238,.5)'}],
+  eraser: [{id:'small',text:'S'},{id:'medium',text:'M'},{id:'large',text:'L'}],
+  shapes: [
+    {id:'rect',icon:'<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>'},
+    {id:'circle',icon:'<circle cx="12" cy="12" r="10"/>'},
+    {id:'arrow',icon:'<path d="M7 7h10v10"/><path d="M7 17 17 7"/>'},
+    {id:'line',icon:'<path d="M5 12h14"/>'}
+  ],
+  pages: [
+    {id:'add',icon:DOC+'<line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>'},
+    {id:'delete',icon:DOC+'<line x1="9" y1="15" x2="15" y2="15"/>'},
+    {id:'clear',icon:DOC+'<path d="m9 13 6 6"/><path d="m15 13-6 6"/>'},
+    {id:'delcontents',icon:DOC+'<path d="M9 15h6"/><path d="M12 18v-6"/>'}
+  ]
+};
+
+// ---- Helpers ----
+const $ = id => document.getElementById(id);
+const NS = 'http://www.w3.org/2000/svg';
+const ov = $('overlay'), arms = $('arms'), cursorEl = $('cursor'), statusEl = $('status');
+const cornerEl = $('corner'), readoutEl = $('readout');
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const ang = (a, b) => Math.atan2(b.x - a.x, -(b.y - a.y));      // 0 = up, clockwise
+const angDiff = (a, b) => { const d = Math.abs(a - b) % (2 * Math.PI); return d > Math.PI ? 2 * Math.PI - d : d; };
+const dirVec = a => ({ x: Math.sin(a), y: -Math.cos(a) });
+const cur = () => path[path.length - 1];
+
+// ---- Mode toggles (at least one always on) ----
+const modes = { turn: true, pause: true };
+function paintToggles() { for (const k in modes) $('t-' + k).classList.toggle('on', modes[k]); }
+function toggle(k) {
+  const other = k === 'turn' ? 'pause' : 'turn', b = $('t-' + k);
+  b.blur();
+  if (modes[k] && !modes[other]) { b.classList.remove('nope'); void b.offsetWidth; b.classList.add('nope'); return; }
+  modes[k] = !modes[k];
+  paintToggles();
+}
+$('t-turn').addEventListener('click', () => toggle('turn'));
+$('t-pause').addEventListener('click', () => toggle('pause'));
+
+// ---- State ----
+let isOpen = false, path = [], L = null, hover = { kind: 'none' };
+let last = { x: innerWidth / 2, y: innerHeight / 2 };
+let liveLine = null, bendsG = null, nodeEls = [], parentEl = null, curEl = null, lastHow = '';
+let mode = 'hold', pressPos = { x: 0, y: 0 }, tapHit = null, dragFrom = false;   // mode: pending | hold | tap
+const G = { start: null, trail: [], anchor: null, timer: null };
+
+function setStatus(t) { statusEl.textContent = t; }
+function setReadout(t) { readoutEl.textContent = t; }
+
+// ---- Hover: angle wedge around the active centre, outside the dead zone ----
+function hoverAt(p) {
+  if (!L) return { kind: 'none' };
+  const c = cur(), dx = p.x - c.x, dy = p.y - c.y;
+  if (Math.hypot(dx, dy) < DEAD) return { kind: 'none' };
+  const th = Math.atan2(dx, -dy);
+  let best = { kind: 'none' }, bd = 1e9;
+  L.angles.forEach((a, i) => { const d = angDiff(th, a); if (d < bd) { bd = d; best = { kind: 'child', i }; } });
+  if (L.parentAngle !== null && angDiff(th, L.parentAngle) < bd) best = { kind: 'parent' };
+  return best;
+}
+
+// ---- Gesture detector: pause + sharp turn ----
+function gReset(p) { G.start = p; G.trail = [p]; G.anchor = p; G.maxTurn = 0; cornerEl.style.display = 'none'; armPause(); }
+function armPause() { clearTimeout(G.timer); G.timer = setTimeout(onPause, CFG.PAUSE_MS); }
+function onPause() {
+  if (!isOpen || mode === 'tap' || !modes.pause) return;
+  if (dist(last, cur()) < CFG.PAUSE_MIN) return;
+  fire(hoverAt(last), last, 'pause');
+}
+function onMove(p) {
+  if (dist(p, G.anchor) > CFG.JITTER) { G.anchor = p; armPause(); }
+  G.trail.push(p);
+  if (G.trail.length > 400) G.trail.shift();
+  if (!modes.turn) { setReadout('Sharp turn is off (pause only)'); cornerEl.style.display = 'none'; return; }
+  // corner candidate = newest trail point at least LOOKBACK px behind the pointer
+  let k = G.trail.length - 1;
+  while (k > 0 && dist(G.trail[k], p) < CFG.LOOKBACK) k--;
+  if (k <= 0) { cornerEl.style.display = 'none'; setReadout('no corner yet: move ' + CFG.LOOKBACK + 'px along the stroke'); return; }
+  const ref = G.trail[k];
+  const stroke = dist(ref, G.start);
+  const turn = angDiff(ang(G.start, ref), ang(ref, p)) * 180 / Math.PI;
+  G.maxTurn = Math.max(G.maxTurn, turn);
+  cornerEl.style.display = 'block'; cornerEl.style.left = ref.x + 'px'; cornerEl.style.top = ref.y + 'px';
+  let note = '';
+  if (stroke >= CFG.MIN_STROKE && turn > CFG.MIN_TURN) {
+    const h = hoverAt(ref), it = h.kind === 'child' ? cur().children[h.i] : null;
+    if (h.kind === 'parent' || (it && it.submenu)) { fire(h, ref, 'turn'); return; }
+    note = ' | turned, but the corner is ' + (h.kind === 'none' ? 'inside the dead zone' : 'over a leaf (leaves fire on release)');
+  }
+  setReadout('turn ' + Math.round(turn) + '\u00b0 (max ' + Math.round(G.maxTurn) + '\u00b0) / need ' + CFG.MIN_TURN + '\u00b0 | stroke ' + Math.round(stroke) + 'px / need ' + CFG.MIN_STROKE + 'px' + note);
+}
+
+// Gestures only open submenus or go back; leaves fire on release.
+function fire(h, p, how) {
+  if (h.kind === 'parent') { path.pop(); lastHow = how; after(); return; }
+  if (h.kind !== 'child') return;
+  const it = cur().children[h.i];
+  if (!it.submenu) return;
+  const c = cur();
+  let q = p;
+  if (dist(c, q) < CFG.PARENT_MIN) {
+    const u = dirVec(ang(c, q));
+    q = { x: c.x + u.x * CFG.PARENT_MIN, y: c.y + u.y * CFG.PARENT_MIN };
+  }
+  path.push({ x: q.x, y: q.y, item: it, children: SUB[it.submenu] });
+  lastHow = how;
+  after();
+}
+function after() {
+  gReset(last);
+  render();
+  hover = hv(last);
+  paint();
+  setStatus('via ' + lastHow);
+}
+
+// ---- Path simplification (Ramer-Douglas-Peucker): keeps only the bends ----
+function segDist(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y, len2 = dx * dx + dy * dy;
+  if (!len2) return dist(p, a);
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+  return dist(p, { x: a.x + t * dx, y: a.y + t * dy });
+}
+function simplify(pts, eps) {
+  if (pts.length < 3) return pts;
+  const a = pts[0], b = pts[pts.length - 1];
+  let idx = 0, dmax = 0;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const d = segDist(pts[i], a, b);
+    if (d > dmax) { dmax = d; idx = i; }
+  }
+  if (dmax <= eps) return [a, b];
+  return simplify(pts.slice(0, idx + 1), eps).slice(0, -1).concat(simplify(pts.slice(idx), eps));
+}
+
+// ---- Rendering ----
+function inner(it) {
+  if (it.color) return '<div class="sw" style="background:' + it.color + '"></div>';
+  if (it.text) return '<span class="lbl">' + it.text + '</span>';
+  return '<svg viewBox="0 0 24 24">' + it.icon + '</svg>';
+}
+function mkNode(x, y, it, cls, delay) {
+  const d = document.createElement('div');
+  d.className = 'node ' + cls;
+  d.style.left = x + 'px'; d.style.top = y + 'px';
+  d.innerHTML = inner(it);
+  ov.appendChild(d);
+  setTimeout(() => d.classList.add('show'), delay || 0);
+  return d;
+}
+function mkLine(a, b, cls) {
+  const l = document.createElementNS(NS, 'line');
+  l.setAttribute('x1', a.x); l.setAttribute('y1', a.y);
+  l.setAttribute('x2', b.x); l.setAttribute('y2', b.y);
+  l.setAttribute('class', cls);
+  arms.appendChild(l);
+  return l;
+}
+function clearOverlay() {
+  ov.querySelectorAll('.node,.dot').forEach(e => e.remove());
+  arms.innerHTML = ''; nodeEls = []; parentEl = null; curEl = null;
+}
+function render() {
+  clearOverlay();
+  const c = cur(), n = c.children.length, hasP = path.length > 1;
+  const slot = 2 * Math.PI / (n + (hasP ? 1 : 0));
+  const pa = hasP ? ang(c, path[path.length - 2]) : null;   // direction back to the parent is reserved
+  L = { angles: c.children.map((_, i) => hasP ? pa + (i + 1) * slot : i * slot), parentAngle: pa };
+
+  for (let i = 0; i < path.length - 1; i++) mkLine(path[i], path[i + 1], 'arm');
+
+  path.forEach((p, i) => {
+    const isCur = i === path.length - 1, isPar = i === path.length - 2;
+    if (i === 0 && path.length === 1) { curEl = mkNode(p.x, p.y, { icon: CLOSE }, 'cur ctr', 0); return; }
+    const it = i === 0 ? { icon: BACK } : p.item;
+    const el = mkNode(p.x, p.y, it, isCur ? 'cur' : 'anc', 0);
+    if (isPar) parentEl = el;
+    if (isCur) curEl = el;
+  });
+
+  c.children.forEach((it, i) => {
+    const d = dirVec(L.angles[i]), x = c.x + d.x * R, y = c.y + d.y * R;
+    nodeEls.push({ el: mkNode(x, y, it, '', i * 15), x, y });
+  });
+
+  liveLine = document.createElementNS(NS, 'polyline');
+  liveLine.setAttribute('class', 'live');
+  arms.appendChild(liveLine);
+  bendsG = document.createElementNS(NS, 'g');
+  arms.appendChild(bendsG);
+  paint();
+}
+function paint() {
+  nodeEls.forEach((o, i) => o.el.classList.toggle('hot', hover.kind === 'child' && hover.i === i));
+  if (parentEl) parentEl.classList.toggle('hot', hover.kind === 'parent');
+  if (curEl) curEl.classList.toggle('hot', hover.kind === 'center');
+  const c = cur();
+  bendsG.innerHTML = '';
+  if (mode === 'tap') {
+    liveLine.setAttribute('points', '');
+  } else if (path.length === 1) {
+    // root level: show only the bends of the stroke (for testing sharp turns)
+    const pts = simplify(G.trail.concat(last), CFG.SIMPLIFY);
+    liveLine.setAttribute('points', pts.map(q => q.x + ',' + q.y).join(' '));
+    for (let i = 1; i < pts.length - 1; i++) {
+      const d = document.createElementNS(NS, 'circle');
+      d.setAttribute('cx', pts[i].x); d.setAttribute('cy', pts[i].y); d.setAttribute('r', 6);
+      d.setAttribute('class', 'bend');
+      bendsG.appendChild(d);
+    }
+  } else {
+    // submenus: one straight line from the centre to the hovered item (or to the pointer)
+    let t = last;
+    if (hover.kind === 'child') t = nodeEls[hover.i];
+    else if (hover.kind === 'parent') t = path[path.length - 2];
+    liveLine.setAttribute('points', c.x + ',' + c.y + ' ' + t.x + ',' + t.y);
+  }
+  cursorEl.style.left = last.x + 'px'; cursorEl.style.top = last.y + 'px';
+}
+
+// ---- Open / close / release ----
+function open(x, y) {
+  isOpen = true;
+  mode = 'pending'; pressPos = { x, y }; tapHit = null; dragFrom = false;
+  last = { x, y };
+  path = [{ x, y, item: null, children: ROOT }];
+  hover = { kind: 'none' };
+  lastHow = '';
+  ov.style.display = 'block';
+  gReset(last);
+  render();
+  setStatus('');
+  setReadout('');
+}
+function close() {
+  isOpen = false;
+  clearTimeout(G.timer);
+  ov.style.display = 'none';
+  cornerEl.style.display = 'none';
+  setReadout('');
+  clearOverlay();
+}
+function runLeaf(i) {
+  const names = path.slice(1).map(n => n.item.id).concat(cur().children[i].id).join(' \u203a ');
+  setStatus('Selected: ' + names + (lastHow ? '  (last gesture: ' + lastHow + ')' : ''));
+  flash();
+}
+
+// ---- Hybrid interaction: hold-drag gestures or tap mode ----
+const HIT = 36;
+function hitTest(p) {
+  for (let i = 0; i < nodeEls.length; i++) if (dist(p, nodeEls[i]) < HIT) return { kind: 'child', i };
+  if (path.length > 1 && dist(p, path[path.length - 2]) < HIT) return { kind: 'parent' };
+  if (dist(p, cur()) < HIT) return { kind: 'center' };
+  return { kind: 'none' };
+}
+function hv(p) { return mode === 'tap' ? hitTest(p) : hoverAt(p); }
+function toTap() {
+  mode = 'tap';
+  clearTimeout(G.timer);
+  cornerEl.style.display = 'none';
+  setReadout('');
+  setStatus('menu stays open: tap an item');
+  hover = hitTest(last);
+  paint();
+}
+// side button released
+function holdUp(p) {
+  if (mode === 'pending') { toTap(); return; }          // quick press: keep the menu open
+  const h = hoverAt(p);
+  if (h.kind === 'child' && !cur().children[h.i].submenu) { runLeaf(h.i); close(); }
+  else toTap();                                         // released over nothing: stay open, never lose the menu
+}
+function goBack() {
+  if (path.length > 1) { path.pop(); lastHow = 'tap'; after(); }
+  else close();
+}
+function tapDown(p) {
+  const h = hitTest(p);
+  tapHit = null; dragFrom = false;
+  if (h.kind === 'child') {
+    const it = cur().children[h.i], n = nodeEls[h.i];
+    if (it.submenu) {
+      path.push({ x: n.x, y: n.y, item: it, children: SUB[it.submenu] });
+      lastHow = 'tap'; dragFrom = true; after();
+    } else tapHit = h;                                  // leaf: fires on release
+  } else if (h.kind === 'parent' || h.kind === 'center') goBack();
+  else close();                                         // tapped empty space
+}
+function tapUp(p) {
+  const h = hitTest(p);
+  if (h.kind === 'child' && !cur().children[h.i].submenu && ((tapHit && tapHit.i === h.i) || dragFrom)) {
+    runLeaf(h.i); close();
+  }
+  tapHit = null; dragFrom = false;
+}
+function flash() {
+  const f = document.createElement('div');
+  f.style.cssText = 'position:fixed;inset:0;background:rgba(70,197,223,.12);z-index:99999;pointer-events:none;transition:opacity .2s';
+  document.body.appendChild(f);
+  setTimeout(() => { f.style.opacity = '0'; setTimeout(() => f.remove(), 200); }, 50);
+}
+
+// ---- Input ----
+addEventListener('contextmenu', e => e.preventDefault());
+let lastPressT = -1e9;
+function press(e) {
+  const side = e.buttons === 32 || e.button === 5 || e.button === 2 || e.button === 1;
+  if (side) {
+    if (Math.abs(e.timeStamp - lastPressT) < 80) return;   // pointerdown + mousedown of the same press
+    lastPressT = e.timeStamp;
+    e.preventDefault();
+    if (!isOpen) open(e.clientX, e.clientY);
+    else if (mode === 'tap') close();                      // side button again closes a tap-mode menu
+  } else if (isOpen && mode === 'tap' && e.type === 'pointerdown') {
+    tapDown({ x: e.clientX, y: e.clientY });
+  }
+}
+addEventListener('pointerdown', press);
+addEventListener('mousedown', press);
+addEventListener('pointermove', e => {
+  last = { x: e.clientX, y: e.clientY };
+  if (!isOpen) return;
+  if (mode === 'pending' && dist(last, pressPos) > CFG.TAP_MOVE) mode = 'hold';
+  hover = hv(last);
+  paint();
+  if (mode !== 'tap') onMove(last);
+});
+addEventListener('pointerup', e => {
+  if (!isOpen) return;
+  const p = { x: e.clientX, y: e.clientY };
+  if (mode === 'tap') tapUp(p); else holdUp(p);
+});
+addEventListener('pointercancel', () => { if (isOpen && mode !== 'tap') holdUp(last); });
+addEventListener('keydown', e => {
+  if (e.code === 'Space' && !e.repeat) {
+    e.preventDefault();
+    if (!isOpen) open(last.x, last.y);
+    else if (mode === 'tap') close();
+  }
+});
+addEventListener('keyup', e => {
+  if (e.code === 'Space') { e.preventDefault(); if (isOpen && mode !== 'tap') holdUp(last); }
+});
+</script>
+</body>
+</html>
