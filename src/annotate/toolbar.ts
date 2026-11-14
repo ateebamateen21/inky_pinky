@@ -278,6 +278,15 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		() => controller.toggleNavigation(),
 	);
 
+	// Opens the sticky-notes drawer: every sticky note in the document, listed
+	// down the right edge. Like the outline, a reading action, so it stays
+	// enabled when the document is read-only.
+	const notesButton = iconButton(
+		'inkling-tool-button',
+		{ icon: 'sticky-note', fallback: '🗒', title: 'Sticky notes' },
+		() => controller.toggleNotesDrawer(),
+	);
+
 	// Switches between the plain column of pages and the 2D grid. A way of
 	// looking at the document, so like zoom it stays on a read-only one.
 	const gridButton = iconButton(
@@ -285,7 +294,7 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		{ icon: 'layout-grid', fallback: '▦', title: '2D page layout' },
 		() => controller.toggleGrid(),
 	);
-	actionGroup.append(undoButton, redoButton, separator(), deleteButton, clearPageButton, addPageButton, addPageMenuButton, deletePageButton, deletePageKeepingButton, invertButton, navButton, gridButton);
+	actionGroup.append(undoButton, redoButton, separator(), deleteButton, clearPageButton, addPageButton, addPageMenuButton, deletePageButton, deletePageKeepingButton, invertButton, navButton, notesButton, gridButton);
 
 	// Readouts, not controls — pushed to the far end of the strip (see
 	// .inkling-toolbar-status) so the things you press stay together on the
@@ -399,7 +408,7 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 		const tapeButton = toolButtons.get('tape');
 		if (tapeButton && !controller.canUseTape()) tapeButton.hidden = true;
 		for (const group of [colorGroup, widthGroup, statusGroup]) group.hidden = collapsed;
-		for (const button of [redoButton, deleteButton, clearPageButton, addPageButton, addPageMenuButton, deletePageButton, deletePageKeepingButton, invertButton, navButton, gridButton]) button.hidden = collapsed;
+		for (const button of [redoButton, deleteButton, clearPageButton, addPageButton, addPageMenuButton, deletePageButton, deletePageKeepingButton, invertButton, navButton, notesButton, gridButton]) button.hidden = collapsed;
 		setIconOrText(collapseButton, collapsed ? 'chevrons-down' : 'chevrons-up', collapsed ? '⌄' : '⌃');
 		fullscreenButton.hidden = !controller.supportsFullscreen();
 		const fullscreen = controller.isFullscreen();
@@ -505,9 +514,12 @@ export function buildToolbar(host: HTMLElement, controller: AnnotationController
 			deletePageButton.hidden = addPageButton.hidden;
 			deletePageKeepingButton.hidden = addPageButton.hidden;
 			navButton.hidden = !controller.canToggleNavigation();
+			notesButton.hidden = !controller.canToggleNotesDrawer();
 			invertButton.hidden = !controller.canInvert();
 			gridButton.hidden = !controller.canToggleGrid();
 		}
+		notesButton.toggleClass('is-active', controller.isNotesDrawerOpen());
+		notesButton.setAttribute('aria-pressed', String(controller.isNotesDrawerOpen()));
 		invertButton.toggleClass('is-active', controller.isInverted());
 		gridButton.toggleClass('is-active', controller.isGridMode());
 		gridButton.setAttribute('aria-pressed', String(controller.isGridMode()));

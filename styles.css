@@ -804,6 +804,241 @@
 	background-color: var(--background-modifier-hover);
 }
 
+/* ---------------------------------------------------------------------
+   Sticky-notes drawer
+
+   A panel that slides out from the right edge of the view with a small
+   square card for every sticky note. See src/pdf/notesDrawer.ts for how it
+   is opened and why it is built as the nested boxes below.
+
+   anchor   a sticky strip with no height, placed in the view's column
+            straight after the toolbar. It pins itself just under the toolbar
+            (the view measures the toolbar and sets --inkling-toolbar-height)
+            and takes up no room, so no page moves.
+   clip     the pane's width and the room under the toolbar in height. Clips
+            the drawer while it is slid out of sight, and lets clicks
+            through to the pages everywhere except on the drawer and handle.
+   slider   the part that moves: the handle and the body.
+
+   It is not inside the toolbar because the toolbar sets `touch-action: none`,
+   which applies to everything inside it and would stop the list scrolling
+   under a finger or pen.
+   --------------------------------------------------------------------- */
+
+.inkling-notes-anchor {
+	position: sticky;
+	top: var(--inkling-toolbar-height, 0px);
+	/* Above the pages, below the toolbar (20), so the toolbar's shadow still
+	   falls over the top of the drawer. */
+	z-index: 15;
+	flex: none;
+	height: 0;
+	align-self: stretch;
+	/* The view puts a gap between the things in its column, which this empty
+	   box would otherwise add one more of. A negative top margin of the same
+	   size cancels it, so the pages sit exactly where they did. The sides undo
+	   the view's padding, as the toolbar's do, so the drawer's right edge is
+	   the pane's. */
+	margin: calc(-1 * var(--size-4-3) * var(--inkling-view-zoom, 1)) calc(-1 * var(--size-4-3)) 0;
+	width: calc(100% + 2 * var(--size-4-3));
+	/* How far the slider is slid out of the way, as a share of its own width
+	   by default: all of it when closed. The open rule below brings it to 0,
+	   and a drag overrides it with pixels on the slider itself. */
+	--inkling-notes-offset: 100%;
+}
+
+.inkling-notes-anchor.is-open {
+	--inkling-notes-offset: 0px;
+}
+
+/* In the 2D layout the view is a plain block with no gap between its
+   children, so there is nothing to cancel. */
+.inkling-pdf-view.is-grid .inkling-notes-anchor {
+	margin-top: 0;
+}
+
+.inkling-notes-clip {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: var(--inkling-notes-room, 60vh);
+	/* Without this the drawer, slid out to the right of the pane, would make
+	   the whole view scroll sideways. */
+	overflow: hidden;
+	pointer-events: none;
+}
+
+.inkling-notes-slider {
+	position: absolute;
+	top: 0;
+	right: 0;
+	height: 100%;
+	width: min(20rem, calc(100% - 3rem));
+	transform: translateX(var(--inkling-notes-offset));
+	transition: transform 180ms ease-out;
+	pointer-events: auto;
+}
+
+/* Following the finger, not catching up to it. */
+.inkling-notes-anchor.is-dragging .inkling-notes-slider {
+	transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.inkling-notes-slider {
+		transition: none;
+	}
+}
+
+.inkling-notes-slider .inkling-notes-handle {
+	/* Hangs off the slider's left edge, so it is at the pane's edge when the
+	   drawer is closed and rides along on the drawer's edge when open. A
+	   <button>, which Obsidian styles as a fixed-height centred control, so
+	   everything about its size and shape is declared. */
+	position: absolute;
+	right: 100%;
+	top: 50%;
+	transform: translateY(-50%);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.75rem;
+	height: 5.5rem;
+	padding: 0;
+	border: 1px solid var(--background-modifier-border);
+	border-right: none;
+	border-radius: var(--radius-m) 0 0 var(--radius-m);
+	background-color: var(--background-secondary);
+	color: var(--text-muted);
+	box-shadow: var(--shadow-s);
+	cursor: grab;
+	/* The drag is ours. Without this the browser takes a sideways touch for
+	   a scroll or an app gesture and cancels the pointer mid-drag. This is the
+	   only place that is true: the rest of the drawer does not respond to a
+	   swipe from the screen edge. */
+	touch-action: none;
+}
+
+.inkling-notes-anchor.is-dragging .inkling-notes-handle {
+	cursor: grabbing;
+}
+
+.inkling-notes-slider .inkling-notes-handle:hover {
+	color: var(--text-normal);
+}
+
+.inkling-notes-body {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	background-color: var(--background-secondary);
+	border-left: 1px solid var(--background-modifier-border);
+	border-bottom: 1px solid var(--background-modifier-border);
+	border-bottom-left-radius: var(--radius-m);
+	box-shadow: var(--shadow-s);
+}
+
+.inkling-notes-header {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: baseline;
+	gap: var(--size-4-2);
+	padding: var(--size-4-2) var(--size-4-3);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.inkling-notes-title {
+	flex: 1 1 auto;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.inkling-notes-count {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+
+.inkling-notes-list {
+	/* Without min-height: 0 a flex child never shrinks below its content, and
+	   the list would grow past the drawer's height instead of scrolling. */
+	min-height: 0;
+	flex: 1 1 auto;
+	/* Two square cards to a row. */
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	align-content: start;
+	gap: var(--size-4-3);
+	padding: var(--size-4-3);
+	overflow-y: auto;
+	/* A flick at the end of the list should not carry on into the pages. */
+	overscroll-behavior: contain;
+	touch-action: pan-y;
+}
+
+.inkling-notes-list .inkling-notes-card {
+	/* A card is a <button>, and Obsidian styles every button as a fixed-height
+	   centred flex control. Declaring these is what makes it a left-aligned
+	   square of text; see the same note on .inkling-nav-entry. */
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	justify-content: flex-start;
+	aspect-ratio: 1 / 1;
+	height: auto;
+	width: 100%;
+	padding: var(--size-4-2);
+	overflow: hidden;
+	border: none;
+	border-radius: var(--radius-s);
+	/* Paper. The marker's colour, softened towards white so it reads as a
+	   sticky pad rather than a swatch, with dark ink on top whatever the pen
+	   colour was: a black pen gives grey paper, not unreadable text. The
+	   first declaration is for anything that cannot mix colours. */
+	background-color: #fff3a8;
+	background-color: color-mix(in srgb, var(--inkling-note-color, #ffd43b) 35%, white);
+	color: #1f1f1f;
+	font-family: inherit;
+	text-align: left;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+	cursor: var(--cursor);
+}
+
+.inkling-notes-list .inkling-notes-card:hover {
+	filter: brightness(0.95);
+}
+
+.inkling-notes-card-page {
+	flex: none;
+	margin-bottom: var(--size-2-1);
+	opacity: 0.65;
+	font-size: var(--font-ui-smaller);
+}
+
+.inkling-notes-card-text {
+	font-size: var(--font-ui-small);
+	line-height: 1.35;
+	/* Keeps the line breaks the note was written with, and cuts a long note
+	   off with an ellipsis rather than letting it spill out of its square. */
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 6;
+	line-clamp: 6;
+	overflow: hidden;
+}
+
+.inkling-notes-empty {
+	grid-column: 1 / -1;
+	padding: var(--size-4-2);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
 .inkling-page-box {
 	width: 4.5em;
 	/* Chrome renders number spinners that are useless at this size and

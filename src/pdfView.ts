@@ -10,6 +10,8 @@ import { toArrayBuffer } from './binary';
 import { appendBinarySafely, canAppendBinary, writeBinarySafely } from './vaultWrite';
 import { compareProfiles, formatMediaBox, normalizeRotation, samplePageIndices, type StructureProfile } from './pdf/compatibility';
 import { findMatches, flattenOutline, type OutlineEntry } from './pdf/navigation';
+import { NotesDrawer } from './pdf/notesDrawer';
+import { collectStickyNotes, type StickyNoteEntry } from './pdf/stickyNotes';
 import { BASELINE_DESCENT_RATIO, groupIntoLines, highlightBarHeight, quoteBetween, type PositionedBox, type TextLine } from './pdf/textLines';
 import { RENDER_SCALE, baseRenderScale, layoutRenderScale, zoomedRenderScale } from './pdf/renderScale';
 import { maxWriteIntervalMs } from './pdf/saveCadence';
@@ -396,6 +398,12 @@ export class PdfAnnotateView extends FileView {
 	// outlives the keystroke that started it.
 	private navPanel: HTMLElement | null = null;
 	private navOutline: HTMLElement | null = null;
+	// The sticky-notes drawer (see src/pdf/notesDrawer.ts), built once per file
+	// load alongside the toolbar and hidden until asked for. The two disposers
+	// stop it listening to edits and to size changes once the file is gone.
+	private notesDrawer: NotesDrawer | null = null;
+	private stopNotesDrawerUpdates: (() => void) | null = null;
+	private notesDrawerResizeObserver: ResizeObserver | null = null;
 	// Supersedes an in-flight document search. Separate from renderToken:
 	// a second search within the same file has to cancel the first, and
 	// bumping the render token would cancel the whole page pipeline.
@@ -497,6 +505,8 @@ export class PdfAnnotateView extends FileView {
 			onSnapHighlighterStroke: (pageNumber, points, color) => this.snapHighlighterStroke(pageNumber, points, color),
 			onGoToPage: (pageNumber) => this.scrollToPage(pageNumber),
 			onToggleNavigation: () => this.toggleNavigationPanel(),
+			onToggleNotesDrawer: () => this.setNotesDrawerOpen(!(this.notesDrawer?.isOpen() ?? false)),
+			isNotesDrawerOpen: () => this.notesDrawer?.isOpen() ?? false,
 			onEditNote: (pageNumber, point, existing) => this.editNote(pageNumber, point, existing),
 			supportsTape: true,
 			isPressureEnabled: () => getSettings().pressure,
@@ -598,6 +608,7 @@ export class PdfAnnotateView extends FileView {
 		this.resizeTimer = window.setTimeout(() => {
 			this.resizeTimer = null;
 			this.rebaseToPane();
+			this.fitNotesDrawer();
 		}, RESIZE_SETTLE_MS);
 	}
 
@@ -792,6 +803,8 @@ export class PdfAnnotateView extends FileView {
 		this.sessionInversion = null;
 		this.applyInversion();
 		this.disposeToolbar = buildToolbar(this.contentEl, this.controller);
+		// Straight after the toolbar: it is positioned in the column's order.
+		this.buildNotesDrawer();
 		this.buildNavigationPanel();
 
 		// Everything below this point is asynchronous — reading the file,
@@ -1246,6 +1259,12 @@ export class PdfAnnotateView extends FileView {
 		this.closeNoteEditor();
 		this.navPanel = null;
 		this.navOutline = null;
+		this.stopNotesDrawerUpdates?.();
+		this.stopNotesDrawerUpdates = null;
+		this.notesDrawerResizeObserver?.disconnect();
+		this.notesDrawerResizeObserver = null;
+		this.notesDrawer?.destroy();
+		this.notesDrawer = null;
 		if (this.writeDebounceHandle !== null) {
 			window.clearTimeout(this.writeDebounceHandle);
 			this.writeDebounceHandle = null;
@@ -1963,6 +1982,79 @@ export class PdfAnnotateView extends FileView {
 		if (!panel) return;
 		panel.hidden = !panel.hidden;
 		if (!panel.hidden) panel.querySelector<HTMLInputElement>('.inkling-nav-find-input')?.focus();
+	}
+
+	// ---- Sticky-notes drawer ----
+	//
+	// A "sticky note" is a 'note' annotation: in the PDF file, a /Text
+	// annotation (see src/pdf/stickyNotes.ts for why it has that name). The
+	// drawer lists all of them, on every page, as cards down the right edge.
+
+	private buildNotesDrawer(): void {
+		const drawer = new NotesDrawer(this.contentEl, {
+			getEntries: () => this.listStickyNotes(),
+			// Goes to the page the note is on. Not to the note's spot on it: a
+			// later step, once the drawer itself has proved useful.
+			onPick: (entry) => this.scrollToPage(entry.pageNumber),
+			// The handle opened or closed it, so the toolbar's button has to
+			// catch up. (Opening from the toolbar goes through
+			// setNotesDrawerOpen, which does the same.)
+			onOpenChange: () => this.controller.refreshUi(),
+		});
+		this.notesDrawer = drawer;
+
+		// Keeps the cards in step with edits. The controller tells its listeners
+		// about every change, including ones that have nothing to do with notes;
+		// the drawer ignores those (see NotesDrawer.update), and a closed drawer
+		// is not even asked.
+		this.stopNotesDrawerUpdates = this.controller.subscribe(() => this.refreshNotesDrawer());
+
+		// The toolbar wraps onto a second row, or goes back to one, as the pane
+		// is resized or the tools are collapsed, and the drawer has to start
+		// below wherever the toolbar ends. Not every environment has the
+		// observer (the test one does not).
+		if (typeof ResizeObserver !== 'undefined') {
+			const toolbar = this.contentEl.querySelector<HTMLElement>(':scope > .inkling-toolbar');
+			if (toolbar) {
+				this.notesDrawerResizeObserver = new ResizeObserver(() => this.fitNotesDrawer());
+				this.notesDrawerResizeObserver.observe(toolbar);
+			}
+		}
+		this.fitNotesDrawer();
+	}
+
+	// Every sticky note in the document, read from wherever each page's truth
+	// currently is. A page that has been drawn holds its live annotations in
+	// the controller's store, including edits not yet saved. A page that has
+	// not been drawn yet (pages are only drawn as they scroll into view) has
+	// nothing there, and its notes are still only in what was read from the
+	// file when it opened. The same rule renderPage uses when it seeds a page.
+	private listStickyNotes(): StickyNoteEntry[] {
+		return collectStickyNotes(this.controller.getPageCount(), (pageNumber) =>
+			this.seededPages.has(pageNumber)
+				? this.controller.getPageAnnotations(pageNumber)
+				: (this.savedAnnotations.get(pageNumber) ?? []),
+		);
+	}
+
+	private refreshNotesDrawer(): void {
+		const drawer = this.notesDrawer;
+		if (!drawer?.isOpen()) return;
+		drawer.refresh();
+	}
+
+	private setNotesDrawerOpen(open: boolean): void {
+		const drawer = this.notesDrawer;
+		if (!drawer) return;
+		drawer.setOpen(open);
+		// So the toolbar button shows whether the drawer is open.
+		this.controller.refreshUi();
+	}
+
+	private fitNotesDrawer(): void {
+		const toolbar = this.contentEl.querySelector<HTMLElement>(':scope > .inkling-toolbar');
+		if (!toolbar) return;
+		this.notesDrawer?.fit(toolbar.offsetHeight, this.contentEl.clientHeight);
 	}
 
 	// pdf.js states a destination either as an explicit array or as a name

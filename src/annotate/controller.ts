@@ -284,6 +284,12 @@ export interface AnnotationControllerOptions {
 	// Asks the host to show or hide its navigation panel. Same reasoning:
 	// the panel belongs to the PDF view, not to the shared controller.
 	onToggleNavigation?: () => void;
+	// Shows or hides the sticky-notes drawer, the list of every sticky note in
+	// the document. Also the host's: only the PDF view has a document-wide list
+	// to show. A surface without one omits both and the toolbar hides the
+	// button. (A sticky note is a 'note' annotation; see src/pdf/stickyNotes.ts.)
+	onToggleNotesDrawer?: () => void;
+	isNotesDrawerOpen?: () => boolean;
 	// Switches the view between the plain column of pages and the 2D grid.
 	// Also the host's: only it knows how its pages are laid out.
 	onToggleGrid?: () => void;
@@ -1044,6 +1050,21 @@ export class AnnotationController {
 
 	toggleNavigation(): void {
 		this.options.onToggleNavigation?.();
+	}
+
+	canToggleNotesDrawer(): boolean {
+		return this.options.onToggleNotesDrawer !== undefined;
+	}
+
+	isNotesDrawerOpen(): boolean {
+		return this.options.isNotesDrawerOpen?.() ?? false;
+	}
+
+	// Notifies afterwards so the toolbar button shows whether the drawer is
+	// now open, the same as the full screen button does.
+	toggleNotesDrawer(): void {
+		this.options.onToggleNotesDrawer?.();
+		this.notify();
 	}
 
 	canToggleGrid(): boolean {
